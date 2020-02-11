@@ -56,7 +56,6 @@ struct ProxyStats {
 	Counter txnDefaultPriorityStartIn, txnDefaultPriorityStartOut;
 	Counter txnCommitIn, txnCommitVersionAssigned, txnCommitResolving, txnCommitResolved, txnCommitOut, txnCommitOutSuccess;
 	Counter txnConflicts;
-	Counter txnThrottled;
 	Counter commitBatchIn, commitBatchOut;
 	Counter mutationBytes;
 	Counter mutations;
@@ -69,23 +68,13 @@ struct ProxyStats {
 
 	Future<Void> logger;
 
-	explicit ProxyStats(UID id, Version* pVersion, NotifiedVersion* pCommittedVersion,
-	                    int64_t* commitBatchesMemBytesCountPtr)
-	  : cc("ProxyStats", id.toString()), txnStartIn("TxnStartIn", cc), txnStartOut("TxnStartOut", cc),
-	    txnStartBatch("TxnStartBatch", cc), txnSystemPriorityStartIn("TxnSystemPriorityStartIn", cc),
-	    txnSystemPriorityStartOut("TxnSystemPriorityStartOut", cc),
-	    txnBatchPriorityStartIn("TxnBatchPriorityStartIn", cc),
-	    txnBatchPriorityStartOut("TxnBatchPriorityStartOut", cc),
-	    txnDefaultPriorityStartIn("TxnDefaultPriorityStartIn", cc),
-	    txnDefaultPriorityStartOut("TxnDefaultPriorityStartOut", cc), txnCommitIn("TxnCommitIn", cc),
-	    txnCommitVersionAssigned("TxnCommitVersionAssigned", cc), txnCommitResolving("TxnCommitResolving", cc),
-	    txnCommitResolved("TxnCommitResolved", cc), txnCommitOut("TxnCommitOut", cc),
-	    txnCommitOutSuccess("TxnCommitOutSuccess", cc), txnConflicts("TxnConflicts", cc),
-	    txnThrottled("TxnThrottled", cc), commitBatchIn("CommitBatchIn", cc), commitBatchOut("CommitBatchOut", cc),
-	    mutationBytes("MutationBytes", cc), mutations("Mutations", cc), conflictRanges("ConflictRanges", cc),
-	    keyServerLocationRequests("KeyServerLocationRequests", cc), lastCommitVersionAssigned(0),
-	    commitLatencyBands("CommitLatencyMetrics", id, SERVER_KNOBS->STORAGE_LOGGING_DELAY),
-	    grvLatencyBands("GRVLatencyMetrics", id, SERVER_KNOBS->STORAGE_LOGGING_DELAY) {
+	explicit ProxyStats(UID id, Version* pVersion, NotifiedVersion* pCommittedVersion, int64_t *commitBatchesMemBytesCountPtr)
+	  : cc("ProxyStats", id.toString()),
+		txnStartIn("TxnStartIn", cc), txnStartOut("TxnStartOut", cc), txnStartBatch("TxnStartBatch", cc), txnSystemPriorityStartIn("TxnSystemPriorityStartIn", cc), txnSystemPriorityStartOut("TxnSystemPriorityStartOut", cc), txnBatchPriorityStartIn("TxnBatchPriorityStartIn", cc), txnBatchPriorityStartOut("TxnBatchPriorityStartOut", cc),
+		txnDefaultPriorityStartIn("TxnDefaultPriorityStartIn", cc), txnDefaultPriorityStartOut("TxnDefaultPriorityStartOut", cc), txnCommitIn("TxnCommitIn", cc),	txnCommitVersionAssigned("TxnCommitVersionAssigned", cc), txnCommitResolving("TxnCommitResolving", cc), txnCommitResolved("TxnCommitResolved", cc), txnCommitOut("TxnCommitOut", cc),
+		txnCommitOutSuccess("TxnCommitOutSuccess", cc), txnConflicts("TxnConflicts", cc), commitBatchIn("CommitBatchIn", cc), commitBatchOut("CommitBatchOut", cc), mutationBytes("MutationBytes", cc), mutations("Mutations", cc), conflictRanges("ConflictRanges", cc), keyServerLocationRequests("KeyServerLocationRequests", cc), 
+		lastCommitVersionAssigned(0), commitLatencyBands("CommitLatencyMetrics", id, SERVER_KNOBS->STORAGE_LOGGING_DELAY), grvLatencyBands("GRVLatencyMetrics", id, SERVER_KNOBS->STORAGE_LOGGING_DELAY)
+	{
 		specialCounter(cc, "LastAssignedCommitVersion", [this](){return this->lastCommitVersionAssigned;});
 		specialCounter(cc, "Version", [pVersion](){return *pVersion; });
 		specialCounter(cc, "CommittedVersion", [pCommittedVersion](){ return pCommittedVersion->get(); });
@@ -145,69 +134,40 @@ ACTOR Future<Void> getRate(UID myID, Reference<AsyncVar<ServerDBInfo>> db, int64
 	}
 }
 
-struct TransactionRateInfo {
-	double rate;
-	double limit;
-
-	TransactionRateInfo(double rate) : rate(rate), limit(0) {}
-
-	void reset(double elapsed) {
-		limit = std::min(0.0, limit) + rate * elapsed; // Adjust the limit based on the full elapsed interval in order to properly erase a deficit
-		limit = std::min(limit, rate * SERVER_KNOBS->START_TRANSACTION_BATCH_INTERVAL_MAX); // Don't allow the rate to exceed what would be allowed in the maximum batch interval
-		limit = std::min(limit, SERVER_KNOBS->START_TRANSACTION_MAX_TRANSACTIONS_TO_START);
-	}
-
-	bool canStart(int64_t numAlreadyStarted) {
-		return numAlreadyStarted < limit;
-	}
-
-	void updateBudget(int64_t numStarted) {
-		limit -= numStarted;
-	}
-};
-
 ACTOR Future<Void> queueTransactionStartRequests(
-    Reference<AsyncVar<ServerDBInfo>> db,
-    std::priority_queue<std::pair<GetReadVersionRequest, int64_t>,
-                        std::vector<std::pair<GetReadVersionRequest, int64_t>>>* transactionQueue,
-    FutureStream<GetReadVersionRequest> readVersionRequests, PromiseStream<Void> GRVTimer, double* lastGRVTime,
-    double* GRVBatchTime, FutureStream<double> replyTimes, ProxyStats* stats, TransactionRateInfo* batchRateInfo) {
+	std::priority_queue< std::pair<GetReadVersionRequest, int64_t>, std::vector< std::pair<GetReadVersionRequest, int64_t> > > *transactionQueue,
+	FutureStream<GetReadVersionRequest> readVersionRequests,
+	PromiseStream<Void> GRVTimer, double *lastGRVTime,
+	double *GRVBatchTime, FutureStream<double> replyTimes,
+	ProxyStats* stats) 
+{
 	state int64_t counter = 0;
 	loop choose{
 		when(GetReadVersionRequest req = waitNext(readVersionRequests)) {
-			if (req.debugID.present()) {
+			if (req.debugID.present())
 				g_traceBatch.addEvent("TransactionDebug", req.debugID.get().first(), "MasterProxyServer.queueTransactionStartRequests.Before");
-			}
 
-			if (req.priority() >= GetReadVersionRequest::PRIORITY_SYSTEM_IMMEDIATE) {
-				stats->txnSystemPriorityStartIn += req.transactionCount;
-			} else if (req.priority() >= GetReadVersionRequest::PRIORITY_DEFAULT) {
-				stats->txnDefaultPriorityStartIn += req.transactionCount;
-			} else {
-				// Return error for batch_priority GRV requests
-				int64_t proxiesCount = std::max((int)db->get().client.proxies.size(), 1);
-				if (batchRateInfo->rate <= (1.0 / proxiesCount)) {
-					req.reply.sendError(batch_transaction_throttled());
-					stats->txnThrottled += req.transactionCount;
-					continue;
-				}
-				stats->txnBatchPriorityStartIn += req.transactionCount;
-			}
 			stats->txnStartIn += req.transactionCount;
+			if (req.priority() >= GetReadVersionRequest::PRIORITY_SYSTEM_IMMEDIATE)
+				stats->txnSystemPriorityStartIn += req.transactionCount;
+			else if (req.priority() >= GetReadVersionRequest::PRIORITY_DEFAULT)
+				stats->txnDefaultPriorityStartIn += req.transactionCount;
+			else
+				stats->txnBatchPriorityStartIn += req.transactionCount;
 
 			if (transactionQueue->empty()) {
 				forwardPromise(GRVTimer, delayJittered(std::max(0.0, *GRVBatchTime - (now() - *lastGRVTime)), TaskPriority::ProxyGRVTimer));
 			}
+
 			transactionQueue->push(std::make_pair(req, counter--));
 		}
 		// dynamic batching monitors reply latencies
 		when(double reply_latency = waitNext(replyTimes)) {
 			double target_latency = reply_latency * SERVER_KNOBS->START_TRANSACTION_BATCH_INTERVAL_LATENCY_FRACTION;
-			*GRVBatchTime = std::max(
-			    SERVER_KNOBS->START_TRANSACTION_BATCH_INTERVAL_MIN,
-			    std::min(SERVER_KNOBS->START_TRANSACTION_BATCH_INTERVAL_MAX,
-			             target_latency * SERVER_KNOBS->START_TRANSACTION_BATCH_INTERVAL_SMOOTHER_ALPHA +
-			                 *GRVBatchTime * (1 - SERVER_KNOBS->START_TRANSACTION_BATCH_INTERVAL_SMOOTHER_ALPHA)));
+			*GRVBatchTime = 
+				std::max(SERVER_KNOBS->START_TRANSACTION_BATCH_INTERVAL_MIN, 
+					std::min(SERVER_KNOBS->START_TRANSACTION_BATCH_INTERVAL_MAX, 
+						target_latency * SERVER_KNOBS->START_TRANSACTION_BATCH_INTERVAL_SMOOTHER_ALPHA + *GRVBatchTime * (1-SERVER_KNOBS->START_TRANSACTION_BATCH_INTERVAL_SMOOTHER_ALPHA)));
 		}
 	}
 }
@@ -238,8 +198,7 @@ struct ProxyCommitData {
 	Reference<ILogSystem> logSystem;
 	IKeyValueStore* txnStateStore;
 	NotifiedVersion committedVersion; // Provided that this recovery has succeeded or will succeed, this version is fully committed (durable)
-	Version minKnownCommittedVersion; // No version smaller than this one will be used as the known committed version
-	                                  // during recovery
+	Version minKnownCommittedVersion; // No version smaller than this one will be used as the known committed version during recovery 
 	Version version;  // The version at which txnStateStore is up to date
 	Promise<Void> validState;  // Set once txnStateStore and version are valid
 	double lastVersionTime;
@@ -248,7 +207,6 @@ struct ProxyCommitData {
 	uint64_t mostRecentProcessedRequestNumber;
 	KeyRangeMap<Deque<std::pair<Version,int>>> keyResolvers;
 	KeyRangeMap<ServerCacheInfo> keyInfo;
-	KeyRangeMap<bool> cacheInfo;
 	std::map<Key, applyMutationsData> uid_applyMutationsData;
 	bool firstProxy;
 	double lastCoalesceTime;
@@ -279,6 +237,8 @@ struct ProxyCommitData {
 	int updateCommitRequests = 0;
 	NotifiedDouble lastCommitTime;
 
+	vector<double> commitComputePerOperation;
+
 	//The tag related to a storage server rarely change, so we keep a vector of tags for each key range to be slightly more CPU efficient.
 	//When a tag related to a storage server does change, we empty out all of these vectors to signify they must be repopulated.
 	//We do not repopulate them immediately to avoid a slow task.
@@ -298,16 +258,6 @@ struct ProxyCommitData {
 		return tags;
 	}
 
-	const bool needsCacheTag(KeyRangeRef range) {
-		auto ranges = cacheInfo.intersectingRanges(range);
-		for(auto r : ranges) {
-			if(r.value()) {
-				return true;
-			}
-		}
-		return false;
-	}
-	
 	void updateLatencyBandConfig(Optional<LatencyBandConfig> newLatencyBandConfig) {
 		if(newLatencyBandConfig.present() != latencyBandConfig.present()
 			|| (newLatencyBandConfig.present() && newLatencyBandConfig.get().grvConfig != latencyBandConfig.get().grvConfig))
@@ -345,7 +295,9 @@ struct ProxyCommitData {
 			localCommitBatchesStarted(0), locked(false), commitBatchInterval(SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_INTERVAL_MIN),
 			firstProxy(firstProxy), cx(openDBOnServer(db, TaskPriority::DefaultEndpoint, true, true)), db(db),
 			singleKeyMutationEvent(LiteralStringRef("SingleKeyMutation")), commitBatchesMemBytesCount(0), lastTxsPop(0), lastStartCommit(0), lastCommitLatency(SERVER_KNOBS->REQUIRED_MIN_RECOVERY_DURATION), lastCommitTime(0)
-	{}
+	{
+		commitComputePerOperation.resize(SERVER_KNOBS->PROXY_COMPUTE_BUCKETS,0.0);
+	}
 };
 
 struct ResolutionRequestBuilder {
@@ -430,7 +382,7 @@ struct ResolutionRequestBuilder {
 };
 
 ACTOR Future<Void> commitBatcher(ProxyCommitData *commitData, PromiseStream<std::pair<std::vector<CommitTransactionRequest>, int> > out, FutureStream<CommitTransactionRequest> in, int desiredBytes, int64_t memBytesLimit) {
-	wait(delayJittered(commitData->commitBatchInterval, TaskPriority::ProxyCommitBatcher));
+	wait(delayJittered(commitData->commitBatchInterval, TaskPriority::ProxyCommitBatcher));  
 
 	state double lastBatch = 0;
 
@@ -527,79 +479,10 @@ bool isWhitelisted(const vector<Standalone<StringRef>>& binPathVec, StringRef bi
 	return std::find(binPathVec.begin(), binPathVec.end(), binPath) != binPathVec.end();
 }
 
-ACTOR Future<Void> addBackupMutations(ProxyCommitData* self, std::map<Key, MutationListRef>* logRangeMutations,
-                                      LogPushData* toCommit, Version commitVersion) {
-	state std::map<Key, MutationListRef>::iterator logRangeMutation = logRangeMutations->begin();
-	state int32_t version = commitVersion / CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE;
-	state int yieldBytes = 0;
-	state BinaryWriter valueWriter(Unversioned());
-
-	// Serialize the log range mutations within the map
-	for (; logRangeMutation != logRangeMutations->end(); ++logRangeMutation)
-	{
-		//FIXME: this is re-implementing the serialize function of MutationListRef in order to have a yield
-		valueWriter = BinaryWriter(IncludeVersion());
-		valueWriter << logRangeMutation->second.totalSize();
-
-		state MutationListRef::Blob* blobIter = logRangeMutation->second.blob_begin;
-		while(blobIter) {
-			if(yieldBytes > SERVER_KNOBS->DESIRED_TOTAL_BYTES) {
-				yieldBytes = 0;
-				wait(yield(TaskPriority::ProxyCommitYield2));
-			}
-			valueWriter.serializeBytes(blobIter->data);
-			yieldBytes += blobIter->data.size();
-			blobIter = blobIter->next;
-		}
-
-		Key val = valueWriter.toValue();
-		
-		BinaryWriter wr(Unversioned());
-
-		// Serialize the log destination
-		wr.serializeBytes( logRangeMutation->first );
-
-		// Write the log keys and version information
-		wr << (uint8_t)hashlittle(&version, sizeof(version), 0);
-		wr << bigEndian64(commitVersion);
-
-		MutationRef backupMutation;
-		backupMutation.type = MutationRef::SetValue;
-		uint32_t* partBuffer = NULL;
-
-		for (int part = 0; part * CLIENT_KNOBS->MUTATION_BLOCK_SIZE < val.size(); part++) {
-
-			// Assign the second parameter as the part
-			backupMutation.param2 = val.substr(part * CLIENT_KNOBS->MUTATION_BLOCK_SIZE,
-				std::min(val.size() - part * CLIENT_KNOBS->MUTATION_BLOCK_SIZE, CLIENT_KNOBS->MUTATION_BLOCK_SIZE));
-
-			// Write the last part of the mutation to the serialization, if the buffer is not defined
-			if (!partBuffer) {
-				// Serialize the part to the writer
-				wr << bigEndian32(part);
-
-				// Define the last buffer part
-				partBuffer = (uint32_t*) ((char*) wr.getData() + wr.getLength() - sizeof(uint32_t));
-			}
-			else {
-				*partBuffer = bigEndian32(part);
-			}
-
-			// Define the mutation type and and location
-			backupMutation.param1 = wr.toValue();
-			ASSERT( backupMutation.param1.startsWith(logRangeMutation->first) );  // We are writing into the configured destination
-				
-			auto& tags = self->tagsForKey(backupMutation.param1);
-			toCommit->addTags(tags);
-			toCommit->addTypedMessage(backupMutation);
-
-//			if (debugMutation("BackupProxyCommit", commitVersion, backupMutation)) {
-//				TraceEvent("BackupProxyCommitTo", self->dbgid).detail("To", describe(tags)).detail("BackupMutation", backupMutation.toString())
-//					.detail("BackupMutationSize", val.size()).detail("Version", commitVersion).detail("DestPath", logRangeMutation.first)
-//					.detail("PartIndex", part).detail("PartIndexEndian", bigEndian32(part)).detail("PartData", backupMutation.param1);
-//			}
-		}
-	}
+ACTOR Future<Void> releaseResolvingAfter(ProxyCommitData* self, Future<Void> releaseDelay, int64_t localBatchNumber) {
+	wait(releaseDelay);
+	ASSERT(self->latestLocalCommitBatchResolving.get() == localBatchNumber-1);
+	self->latestLocalCommitBatchResolving.set(localBatchNumber);
 	return Void();
 }
 
@@ -613,6 +496,15 @@ ACTOR Future<Void> commitBatch(
 	state double t1 = now();
 	state Optional<UID> debugID;
 	state bool forceRecovery = false;
+	state BinaryWriter valueWriter(Unversioned());
+	
+	state int batchOperations = 0;
+	int64_t batchBytes = 0;
+	for (int t = 0; t<trs.size(); t++) {
+		batchOperations += trs[t].transaction.mutations.size();
+		batchBytes += trs[t].transaction.mutations.expectedSize();
+	}
+	state int latencyBucket = batchOperations == 0 ? 0 : std::min<int>(SERVER_KNOBS->PROXY_COMPUTE_BUCKETS-1,SERVER_KNOBS->PROXY_COMPUTE_BUCKETS*batchBytes/(batchOperations*(CLIENT_KNOBS->VALUE_SIZE_LIMIT+CLIENT_KNOBS->KEY_SIZE_LIMIT)));
 
 	ASSERT(SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS <= SERVER_KNOBS->MAX_VERSIONS_IN_FLIGHT);  // since we are using just the former to limit the number of versions actually in flight!
 
@@ -640,10 +532,9 @@ ACTOR Future<Void> commitBatch(
 		g_traceBatch.addEvent("CommitDebug", debugID.get().first(), "MasterProxyServer.commitBatch.Before");
 
 	/////// Phase 1: Pre-resolution processing (CPU bound except waiting for a version # which is separately pipelined and *should* be available by now (unless empty commit); ordered; currently atomic but could yield)
-
-	// Queuing pre-resolution commit processing
-	TEST(self->latestLocalCommitBatchResolving.get() < localBatchNumber - 1);
+	TEST(self->latestLocalCommitBatchResolving.get() < localBatchNumber-1); // Queuing pre-resolution commit processing 
 	wait(self->latestLocalCommitBatchResolving.whenAtLeast(localBatchNumber-1));
+	state Future<Void> releaseDelay = delay(batchOperations*self->commitComputePerOperation[latencyBucket], TaskPriority::ProxyMasterVersionReply);
 	wait(yield(TaskPriority::ProxyCommitYield1));
 
 	if (debugID.present())
@@ -695,9 +586,7 @@ ACTOR Future<Void> commitBatch(
 	}
 
 	state vector<vector<int>> transactionResolverMap = std::move( requests.transactionResolverMap );
-
-	ASSERT(self->latestLocalCommitBatchResolving.get() == localBatchNumber-1);
-	self->latestLocalCommitBatchResolving.set(localBatchNumber);
+	state Future<Void> releaseFuture = releaseResolvingAfter(self, releaseDelay, localBatchNumber);
 
 	/////// Phase 2: Resolution (waiting on the network; pipelined)
 	state vector<ResolveTransactionBatchReply> resolution = wait( getAll(replies) );
@@ -706,10 +595,12 @@ ACTOR Future<Void> commitBatch(
 		g_traceBatch.addEvent("CommitDebug", debugID.get().first(), "MasterProxyServer.commitBatch.AfterResolution");
 
 	////// Phase 3: Post-resolution processing (CPU bound except for very rare situations; ordered; currently atomic but doesn't need to be)
-	TEST(self->latestLocalCommitBatchLogging.get() < localBatchNumber - 1); // Queuing post-resolution commit processing
+	TEST(self->latestLocalCommitBatchLogging.get() < localBatchNumber-1); // Queuing post-resolution commit processing 
 	wait(self->latestLocalCommitBatchLogging.whenAtLeast(localBatchNumber-1));
-	wait(yield(TaskPriority::ProxyCommitYield2));
+	wait(yield(TaskPriority::ProxyCommitYield1));
 
+	state double computeStart = g_network->timer();
+	state double computeDuration = 0; 
 	self->stats.txnCommitResolved += trs.size();
 
 	if (debugID.present())
@@ -740,8 +631,8 @@ ACTOR Future<Void> commitBatch(
 			for (int resolver = 0; resolver < resolution.size(); resolver++)
 				committed = committed && resolution[resolver].stateMutations[versionIndex][transactionIndex].committed;
 			if (committed)
-				applyMetadataMutations( self->dbgid, arena, resolution[0].stateMutations[versionIndex][transactionIndex].mutations, self->txnStateStore, nullptr, &forceRecovery, self->logSystem, 0, &self->vecBackupKeys, &self->keyInfo, &self->cacheInfo, self->firstProxy ? &self->uid_applyMutationsData : nullptr, self->commit, self->cx, &self->committedVersion, &self->storageCache, &self->tag_popped);
-
+				applyMetadataMutations( self->dbgid, arena, resolution[0].stateMutations[versionIndex][transactionIndex].mutations, self->txnStateStore, NULL, &forceRecovery, self->logSystem, 0, &self->vecBackupKeys, &self->keyInfo, self->firstProxy ? &self->uid_applyMutationsData : NULL, self->commit, self->cx, &self->committedVersion, &self->storageCache, &self->tag_popped);
+			
 			if( resolution[0].stateMutations[versionIndex][transactionIndex].mutations.size() && firstStateMutations ) {
 				ASSERT(committed);
 				firstStateMutations = false;
@@ -820,7 +711,7 @@ ACTOR Future<Void> commitBatch(
 	{
 		if (committed[t] == ConflictBatch::TransactionCommitted && (!locked || trs[t].isLockAware())) {
 			commitCount++;
-			applyMetadataMutations(self->dbgid, arena, trs[t].transaction.mutations, self->txnStateStore, &toCommit, &forceRecovery, self->logSystem, commitVersion+1, &self->vecBackupKeys, &self->keyInfo, &self->cacheInfo, self->firstProxy ? &self->uid_applyMutationsData : NULL, self->commit, self->cx, &self->committedVersion, &self->storageCache, &self->tag_popped);
+			applyMetadataMutations(self->dbgid, arena, trs[t].transaction.mutations, self->txnStateStore, &toCommit, &forceRecovery, self->logSystem, commitVersion+1, &self->vecBackupKeys, &self->keyInfo, self->firstProxy ? &self->uid_applyMutationsData : NULL, self->commit, self->cx, &self->committedVersion, &self->storageCache, &self->tag_popped);
 		}
 		if(firstStateMutations) {
 			ASSERT(committed[t] == ConflictBatch::TransactionCommitted);
@@ -853,9 +744,10 @@ ACTOR Future<Void> commitBatch(
 	// This second pass through committed transactions assigns the actual mutations to the appropriate storage servers' tags
 	state int mutationCount = 0;
 	state int mutationBytes = 0;
-
+	
 	state std::map<Key, MutationListRef> logRangeMutations;
 	state Arena logRangeMutationsArena;
+	state uint32_t v = commitVersion / CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE;
 	state int transactionNum = 0;
 	state int yieldBytes = 0;
 
@@ -866,7 +758,11 @@ ACTOR Future<Void> commitBatch(
 			for (; mutationNum < pMutations->size(); mutationNum++) {
 				if(yieldBytes > SERVER_KNOBS->DESIRED_TOTAL_BYTES) {
 					yieldBytes = 0;
-					wait(yield(TaskPriority::ProxyCommitYield2));
+					if(g_network->check_yield(TaskPriority::ProxyCommitYield1)) {
+						computeDuration += g_network->timer() - computeStart;
+						wait(delay(0, TaskPriority::ProxyCommitYield1));
+						computeStart = g_network->timer();
+					}
 				}
 
 				auto& m = (*pMutations)[mutationNum];
@@ -878,7 +774,7 @@ ACTOR Future<Void> commitBatch(
 
 				if (isSingleKeyMutation((MutationRef::Type) m.type)) {
 					auto& tags = self->tagsForKey(m.param1);
-
+	
 					if(self->singleKeyMutationEvent->enabled) {
 						KeyRangeRef shard = self->keyInfo.rangeContaining(m.param1).range();
 						self->singleKeyMutationEvent->tag1 = (int64_t)tags[0].id;
@@ -891,16 +787,11 @@ ACTOR Future<Void> commitBatch(
 
 					if (debugMutation("ProxyCommit", commitVersion, m))
 						TraceEvent("ProxyCommitTo", self->dbgid).detail("To", describe(tags)).detail("Mutation", m.toString()).detail("Version", commitVersion);
-					
 					toCommit.addTags(tags);
-					if(self->cacheInfo[m.param1]) {
-						toCommit.addTag(cacheTag);
-					}
 					toCommit.addTypedMessage(m);
 				}
 				else if (m.type == MutationRef::ClearRange) {
-					KeyRangeRef clearRange(KeyRangeRef(m.param1, m.param2));
-					auto ranges = self->keyInfo.intersectingRanges(clearRange);
+					auto ranges = self->keyInfo.intersectingRanges(KeyRangeRef(m.param1, m.param2));
 					auto firstRange = ranges.begin();
 					++firstRange;
 					if (firstRange == ranges.end()) {
@@ -920,11 +811,7 @@ ACTOR Future<Void> commitBatch(
 						}
 						if (debugMutation("ProxyCommit", commitVersion, m))
 							TraceEvent("ProxyCommitTo", self->dbgid).detail("To", describe(allSources)).detail("Mutation", m.toString()).detail("Version", commitVersion);
-
 						toCommit.addTags(allSources);
-					}
-					if(self->needsCacheTag(clearRange)) {
-						toCommit.addTag(cacheTag);
 					}
 					toCommit.addTypedMessage(m);
 				} else
@@ -968,7 +855,78 @@ ACTOR Future<Void> commitBatch(
 
 	// Serialize and backup the mutations as a single mutation
 	if ((self->vecBackupKeys.size() > 1) && logRangeMutations.size()) {
-		wait( addBackupMutations(self, &logRangeMutations, &toCommit, commitVersion) );
+		state std::map<Key, MutationListRef>::iterator logRangeMutation = logRangeMutations.begin();
+
+		// Serialize the log range mutations within the map
+		for (; logRangeMutation != logRangeMutations.end(); ++logRangeMutation)
+		{
+			//FIXME: this is re-implementing the serialize function of MutationListRef in order to have a yield
+			valueWriter = BinaryWriter(IncludeVersion());
+			valueWriter << logRangeMutation->second.totalSize();
+
+			state MutationListRef::Blob* blobIter = logRangeMutation->second.blob_begin;
+			while(blobIter) {
+				if(yieldBytes > SERVER_KNOBS->DESIRED_TOTAL_BYTES) {
+					yieldBytes = 0;
+					if(g_network->check_yield(TaskPriority::ProxyCommitYield1)) {
+						computeDuration += g_network->timer() - computeStart;
+						wait(delay(0, TaskPriority::ProxyCommitYield1));
+						computeStart = g_network->timer();
+					}
+				}
+				valueWriter.serializeBytes(blobIter->data);
+				yieldBytes += blobIter->data.size();
+				blobIter = blobIter->next;
+			}
+
+			Key val = valueWriter.toValue();
+			
+			BinaryWriter wr(Unversioned());
+
+			// Serialize the log destination
+			wr.serializeBytes( logRangeMutation->first );
+
+			// Write the log keys and version information
+			wr << (uint8_t)hashlittle(&v, sizeof(v), 0);
+			wr << bigEndian64(commitVersion);
+
+			MutationRef backupMutation;
+			backupMutation.type = MutationRef::SetValue;
+			uint32_t* partBuffer = NULL;
+
+			for (int part = 0; part * CLIENT_KNOBS->MUTATION_BLOCK_SIZE < val.size(); part++) {
+
+				// Assign the second parameter as the part
+				backupMutation.param2 = val.substr(part * CLIENT_KNOBS->MUTATION_BLOCK_SIZE,
+					std::min(val.size() - part * CLIENT_KNOBS->MUTATION_BLOCK_SIZE, CLIENT_KNOBS->MUTATION_BLOCK_SIZE));
+
+				// Write the last part of the mutation to the serialization, if the buffer is not defined
+				if (!partBuffer) {
+					// Serialize the part to the writer
+					wr << bigEndian32(part);
+
+					// Define the last buffer part
+					partBuffer = (uint32_t*) ((char*) wr.getData() + wr.getLength() - sizeof(uint32_t));
+				}
+				else {
+					*partBuffer = bigEndian32(part);
+				}
+
+				// Define the mutation type and and location
+				backupMutation.param1 = wr.toValue();
+				ASSERT( backupMutation.param1.startsWith(logRangeMutation->first) );  // We are writing into the configured destination
+					
+				auto& tags = self->tagsForKey(backupMutation.param1);
+				toCommit.addTags(tags);
+				toCommit.addTypedMessage(backupMutation);
+
+//				if (debugMutation("BackupProxyCommit", commitVersion, backupMutation)) {
+//					TraceEvent("BackupProxyCommitTo", self->dbgid).detail("To", describe(tags)).detail("BackupMutation", backupMutation.toString())
+//						.detail("BackupMutationSize", val.size()).detail("Version", commitVersion).detail("DestPath", logRangeMutation.first)
+//						.detail("PartIndex", part).detail("PartIndexEndian", bigEndian32(part)).detail("PartData", backupMutation.param1);
+//				}
+			}
+		}
 	}
 
 	self->stats.mutations += mutationCount;
@@ -976,29 +934,33 @@ ACTOR Future<Void> commitBatch(
 
 	// Storage servers mustn't make durable versions which are not fully committed (because then they are impossible to roll back)
 	// We prevent this by limiting the number of versions which are semi-committed but not fully committed to be less than the MVCC window
-	while (self->committedVersion.get() < commitVersion - SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS) {
-		// This should be *extremely* rare in the real world, but knob buggification should make it happen in simulation
-		TEST(true);  // Semi-committed pipeline limited by MVCC window
-		//TraceEvent("ProxyWaitingForCommitted", self->dbgid).detail("CommittedVersion", self->committedVersion.get()).detail("NeedToCommit", commitVersion);
-		choose{
-			when(wait(self->committedVersion.whenAtLeast(commitVersion - SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS))) {
-				wait(yield());
-				break;
-			}
-			when(GetReadVersionReply v = wait(self->getConsistentReadVersion.getReply(GetReadVersionRequest(0, GetReadVersionRequest::PRIORITY_SYSTEM_IMMEDIATE | GetReadVersionRequest::FLAG_CAUSAL_READ_RISKY)))) {
-				if(v.version > self->committedVersion.get()) {
-					self->locked = v.locked;
-					self->metadataVersion = v.metadataVersion;
-					self->committedVersion.set(v.version);
+	if(self->committedVersion.get() < commitVersion - SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS) {
+		computeDuration += g_network->timer() - computeStart;
+		while (self->committedVersion.get() < commitVersion - SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS) {
+			// This should be *extremely* rare in the real world, but knob buggification should make it happen in simulation
+			TEST(true);  // Semi-committed pipeline limited by MVCC window
+			//TraceEvent("ProxyWaitingForCommitted", self->dbgid).detail("CommittedVersion", self->committedVersion.get()).detail("NeedToCommit", commitVersion);
+			choose{
+				when(wait(self->committedVersion.whenAtLeast(commitVersion - SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS))) {
+					wait(yield());
+					break; 
 				}
-
-				if (self->committedVersion.get() < commitVersion - SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS)
-					wait(delay(SERVER_KNOBS->PROXY_SPIN_DELAY));
+				when(GetReadVersionReply v = wait(self->getConsistentReadVersion.getReply(GetReadVersionRequest(0, GetReadVersionRequest::PRIORITY_SYSTEM_IMMEDIATE | GetReadVersionRequest::FLAG_CAUSAL_READ_RISKY)))) {
+					if(v.version > self->committedVersion.get()) {
+						self->locked = v.locked;
+						self->metadataVersion = v.metadataVersion;
+						self->committedVersion.set(v.version);
+					}
+					
+					if (self->committedVersion.get() < commitVersion - SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS)
+						wait(delay(SERVER_KNOBS->PROXY_SPIN_DELAY));
+				}
 			}
 		}
+		computeStart = g_network->timer();
 	}
 
-	state LogSystemDiskQueueAdapter::CommitMessage msg = wait(storeCommits.back().first); // Should just be doing yields
+	state LogSystemDiskQueueAdapter::CommitMessage msg = storeCommits.back().first.get();
 
 	if (debugID.present())
 		g_traceBatch.addEvent("CommitDebug", debugID.get().first(), "MasterProxyServer.commitBatch.AfterStoreCommits");
@@ -1031,6 +993,16 @@ ACTOR Future<Void> commitBatch(
 		self->latestLocalCommitBatchLogging.set(localBatchNumber);
 	}
 
+	computeDuration += g_network->timer() - computeStart;
+	if(computeDuration > SERVER_KNOBS->MIN_PROXY_COMPUTE && batchOperations > 0) {
+		double computePerOperation = computeDuration/batchOperations;
+		if(computePerOperation <= self->commitComputePerOperation[latencyBucket] || self->commitComputePerOperation[latencyBucket] == 0.0) {
+			self->commitComputePerOperation[latencyBucket] = computePerOperation;
+		} else {
+			self->commitComputePerOperation[latencyBucket] = SERVER_KNOBS->PROXY_COMPUTE_GROWTH_RATE*computePerOperation + ((1.0-SERVER_KNOBS->PROXY_COMPUTE_GROWTH_RATE)*self->commitComputePerOperation[latencyBucket]);
+		}
+	}
+
 	/////// Phase 4: Logging (network bound; pipelined up to MAX_READ_TRANSACTION_LIFE_VERSIONS (limited by loop above))
 
 	try {
@@ -1048,7 +1020,7 @@ ACTOR Future<Void> commitBatch(
 	}
 	self->lastCommitLatency = now()-commitStartTime;
 	self->lastCommitTime = std::max(self->lastCommitTime.get(), commitStartTime);
-	wait(yield(TaskPriority::ProxyCommitYield3));
+	wait(yield(TaskPriority::ProxyCommitYield2));
 
 	if( self->popRemoteTxs && msg.popTo > ( self->txsPopVersions.size() ? self->txsPopVersions.back().second : self->lastTxsPop ) ) {
 		if(self->txsPopVersions.size() >= SERVER_KNOBS->MAX_TXS_POP_VERSION_HISTORY) {
@@ -1087,7 +1059,7 @@ ACTOR Future<Void> commitBatch(
 	}
 
 	// Send replies to clients
-	double endTime = timer();
+	double endTime = g_network->timer();
 	for (int t = 0; t < trs.size(); t++) {
 		if (committed[t] == ConflictBatch::TransactionCommitted && (!locked || trs[t].isLockAware())) {
 			ASSERT_WE_THINK(commitVersion != invalidVersion);
@@ -1130,14 +1102,15 @@ ACTOR Future<Void> commitBatch(
 
 	// Dynamic batching for commits
 	double target_latency = (now() - t1) * SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_INTERVAL_LATENCY_FRACTION;
-	self->commitBatchInterval = std::max(
-	    SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_INTERVAL_MIN,
-	    std::min(SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_INTERVAL_MAX,
-	             target_latency * SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_INTERVAL_SMOOTHER_ALPHA +
-	                 self->commitBatchInterval * (1 - SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_INTERVAL_SMOOTHER_ALPHA)));
+	self->commitBatchInterval = 
+		std::max(SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_INTERVAL_MIN, 
+			std::min(SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_INTERVAL_MAX, 
+				target_latency * SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_INTERVAL_SMOOTHER_ALPHA + self->commitBatchInterval * (1-SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_INTERVAL_SMOOTHER_ALPHA)));
+
 
 	self->commitBatchesMemBytesCount -= currentBatchMemBytesCount;
 	ASSERT_ABORT(self->commitBatchesMemBytesCount >= 0);
+	wait(releaseFuture);
 	return Void();
 }
 
@@ -1170,9 +1143,8 @@ ACTOR Future<GetReadVersionReply> getLiveCommittedVersion(ProxyCommitData* commi
 		wait(commitData->lastCommitTime.whenAtLeast(now() - SERVER_KNOBS->REQUIRED_MIN_RECOVERY_DURATION));
 	}
 
-	if (debugID.present()) {
+	if (debugID.present())
 		g_traceBatch.addEvent("TransactionDebug", debugID.get().first(), "MasterProxyServer.getLiveCommittedVersion.confirmEpochLive");
-	}
 
 	vector<GetReadVersionReply> versions = wait(getAll(proxyVersions));
 	GetReadVersionReply rep;
@@ -1186,9 +1158,8 @@ ACTOR Future<GetReadVersionReply> getLiveCommittedVersion(ProxyCommitData* commi
 		}
 	}
 
-	if (debugID.present()) {
+	if (debugID.present())
 		g_traceBatch.addEvent("TransactionDebug", debugID.get().first(), "MasterProxyServer.getLiveCommittedVersion.After");
-	}
 
 	commitData->stats.txnStartOut += transactionCount;
 	commitData->stats.txnSystemPriorityStartOut += systemTransactionCount;
@@ -1198,23 +1169,35 @@ ACTOR Future<GetReadVersionReply> getLiveCommittedVersion(ProxyCommitData* commi
 	return rep;
 }
 
-ACTOR Future<Void> sendGrvReplies(Future<GetReadVersionReply> replyFuture, std::vector<GetReadVersionRequest> requests,
-                                  ProxyStats* stats, Version minKnownCommittedVersion) {
-	GetReadVersionReply reply = wait(replyFuture);
+struct TransactionRateInfo {
+	double rate;
+	double limit;
 
-	double end = timer();
+	TransactionRateInfo(double rate) : rate(rate), limit(0) {}
+
+	void reset(double elapsed) {
+		limit = std::min(0.0, limit) + rate * elapsed; // Adjust the limit based on the full elapsed interval in order to properly erase a deficit
+		limit = std::min(limit, rate * SERVER_KNOBS->START_TRANSACTION_BATCH_INTERVAL_MAX); // Don't allow the rate to exceed what would be allowed in the maximum batch interval
+		limit = std::min(limit, SERVER_KNOBS->START_TRANSACTION_MAX_TRANSACTIONS_TO_START);
+	}
+
+	bool canStart(int64_t numAlreadyStarted) {
+		return numAlreadyStarted < limit;
+	}
+
+	void updateBudget(int64_t numStarted) {
+		limit -= numStarted;
+	}
+};
+
+ACTOR Future<Void> sendGrvReplies(Future<GetReadVersionReply> replyFuture, std::vector<GetReadVersionRequest> requests, ProxyStats *stats) {
+	GetReadVersionReply reply = wait(replyFuture);
+	double end = g_network->timer();
 	for(GetReadVersionRequest const& request : requests) {
 		if(request.priority() >= GetReadVersionRequest::PRIORITY_DEFAULT) {
 			stats->grvLatencyBands.addMeasurement(end - request.requestTime());
 		}
-		if (request.flags & GetReadVersionRequest::FLAG_USE_MIN_KNOWN_COMMITTED_VERSION) {
-			// Only backup worker may infrequently use this flag.
-			GetReadVersionReply minKCVReply = reply;
-			minKCVReply.version = minKnownCommittedVersion;
-			request.reply.send(minKCVReply);
-		} else {
-			request.reply.send(reply);
-		}
+		request.reply.send(reply);
 	}
 
 	return Void();
@@ -1241,9 +1224,7 @@ ACTOR static Future<Void> transactionStarter(
 
 	state PromiseStream<double> replyTimes;
 	addActor.send(getRate(proxy.id(), db, &transactionCount, &batchTransactionCount, &normalRateInfo.rate, &batchRateInfo.rate, healthMetricsReply, detailedHealthMetricsReply));
-	addActor.send(queueTransactionStartRequests(db, &transactionQueue, proxy.getConsistentReadVersion.getFuture(),
-	                                            GRVTimer, &lastGRVTime, &GRVBatchTime, replyTimes.getFuture(),
-	                                            &commitData->stats, &batchRateInfo));
+	addActor.send(queueTransactionStartRequests(&transactionQueue, proxy.getConsistentReadVersion.getFuture(), GRVTimer, &lastGRVTime, &GRVBatchTime, replyTimes.getFuture(), &commitData->stats));
 
 	// Get a list of the other proxies that go together with us
 	while (std::find(db->get().client.proxies.begin(), db->get().client.proxies.end(), proxy) == db->get().client.proxies.end())
@@ -1282,12 +1263,11 @@ ACTOR static Future<Void> transactionStarter(
 			auto& req = transactionQueue.top().first;
 			int tc = req.transactionCount;
 
-			if (req.priority() < GetReadVersionRequest::PRIORITY_DEFAULT &&
-			    !batchRateInfo.canStart(transactionsStarted[0] + transactionsStarted[1])) {
+			if(req.priority() < GetReadVersionRequest::PRIORITY_DEFAULT && !batchRateInfo.canStart(transactionsStarted[0] + transactionsStarted[1])) {
 				break;
-			} else if (req.priority() < GetReadVersionRequest::PRIORITY_SYSTEM_IMMEDIATE &&
-			           !normalRateInfo.canStart(transactionsStarted[0] + transactionsStarted[1])) {
-				break;
+			}
+			else if(req.priority() < GetReadVersionRequest::PRIORITY_SYSTEM_IMMEDIATE && !normalRateInfo.canStart(transactionsStarted[0] + transactionsStarted[1])) {
+				break;	
 			}
 
 			if (req.debugID.present()) {
@@ -1316,10 +1296,9 @@ ACTOR static Future<Void> transactionStarter(
 		.detail("NTransactionToStart", nTransactionsToStart)
 		.detail("TransactionRate", transactionRate)
 		.detail("TransactionQueueSize", transactionQueue.size())
-		.detail("NumTransactionsStarted", transactionsStarted[0] + transactionsStarted[1])
+		.detail("NumTransactionsStarted", transactionsStarted[0] + transactionsStarted[1]) 
 		.detail("NumSystemTransactionsStarted", systemTransactionsStarted[0] + systemTransactionsStarted[1])
-		.detail("NumNonSystemTransactionsStarted", transactionsStarted[0] + transactionsStarted[1] -
-		systemTransactionsStarted[0] - systemTransactionsStarted[1])
+		.detail("NumNonSystemTransactionsStarted", transactionsStarted[0] + transactionsStarted[1] - systemTransactionsStarted[0] - systemTransactionsStarted[1])
 		.detail("TransactionBudget", transactionBudget)
 		.detail("BatchTransactionBudget", batchTransactionBudget);*/
 
@@ -1336,11 +1315,10 @@ ACTOR static Future<Void> transactionStarter(
 		for (int i = 0; i < start.size(); i++) {
 			if (start[i].size()) {
 				Future<GetReadVersionReply> readVersionReply = getLiveCommittedVersion(commitData, i, &otherProxies, debugID, transactionsStarted[i], systemTransactionsStarted[i], defaultPriTransactionsStarted[i], batchPriTransactionsStarted[i]);
-				addActor.send(sendGrvReplies(readVersionReply, start[i], &commitData->stats,
-				                             commitData->minKnownCommittedVersion));
+				addActor.send(sendGrvReplies(readVersionReply, start[i], &commitData->stats));
 
 				// for now, base dynamic batching on the time for normal requests (not read_risky)
-				if (i == 0) {
+				if (i == 0) { 
 					addActor.send(timeReply(readVersionReply, replyTimes));
 				}
 			}
@@ -1597,7 +1575,7 @@ ACTOR Future<Void> proxySnapCreate(ProxySnapRequest snapReq, ProxyCommitData* co
 
 		// send a snap request to DD
 		if (!commitData->db->get().distributor.present()) {
-			TraceEvent(SevWarnAlways, "DataDistributorNotPresent").detail("Operation", "SnapRequest");
+			TraceEvent(SevWarnAlways, "DataDistributorNotPresent");
 			throw operation_failed();
 		}
 		state Future<ErrorOr<Void>> ddSnapReq =
@@ -1626,34 +1604,6 @@ ACTOR Future<Void> proxySnapCreate(ProxySnapRequest snapReq, ProxyCommitData* co
 	TraceEvent("SnapMasterProxy_SnapReqExit")
 		.detail("SnapPayload", snapReq.snapPayload)
 		.detail("SnapUID", snapReq.snapUID);
-	return Void();
-}
-
-ACTOR Future<Void> proxyCheckSafeExclusion(Reference<AsyncVar<ServerDBInfo>> db, ExclusionSafetyCheckRequest req) {
-	TraceEvent("SafetyCheckMasterProxyBegin");
-	state ExclusionSafetyCheckReply reply(false);
-	if (!db->get().distributor.present()) {
-		TraceEvent(SevWarnAlways, "DataDistributorNotPresent").detail("Operation", "ExclusionSafetyCheck");
-		req.reply.send(reply);
-		return Void();
-	}
-	try {
-		state Future<ErrorOr<DistributorExclusionSafetyCheckReply>> safeFuture =
-		    db->get().distributor.get().distributorExclCheckReq.tryGetReply(
-		        DistributorExclusionSafetyCheckRequest(req.exclusions));
-		DistributorExclusionSafetyCheckReply _reply = wait(throwErrorOr(safeFuture));
-		reply.safe = _reply.safe;
-	} catch (Error& e) {
-		TraceEvent("SafetyCheckMasterProxyResponseError").error(e);
-		if (e.code() != error_code_operation_cancelled) {
-			req.reply.sendError(e);
-			return Void();
-		} else {
-			throw e;
-		}
-	}
-	TraceEvent("SafetyCheckMasterProxyFinish");
-	req.reply.send(reply);
 	return Void();
 }
 
@@ -1726,12 +1676,10 @@ ACTOR Future<Void> masterProxyServerCore(
 		addActor.send(lastCommitUpdater(&commitData, addActor));
 	}
 
-	int commitBatchByteLimit =
-	    (int)std::min<double>(SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_BYTES_MAX,
-	                          std::max<double>(SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_BYTES_MIN,
-	                                           SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_BYTES_SCALE_BASE *
-	                                               pow(commitData.db->get().client.proxies.size(),
-	                                                   SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_BYTES_SCALE_POWER)));
+	int commitBatchByteLimit = 
+		(int)std::min<double>(SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_BYTES_MAX, 
+			std::max<double>(SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_BYTES_MIN, 
+				SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_BYTES_SCALE_BASE * pow(commitData.db->get().client.proxies.size(), SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_BYTES_SCALE_POWER)));
 
 	commitBatcherActor = commitBatcher(&commitData, batchedCommits, proxy.commit.getFuture(), commitBatchByteLimit, commitBatchesMemoryLimit);
 	loop choose{
@@ -1775,15 +1723,12 @@ ACTOR Future<Void> masterProxyServerCore(
 			TraceEvent(SevDebug, "SnapMasterEnqueue");
 			addActor.send(proxySnapCreate(snapReq, &commitData));
 		}
-		when(ExclusionSafetyCheckRequest exclCheckReq = waitNext(proxy.exclusionSafetyCheckReq.getFuture())) {
-			addActor.send(proxyCheckSafeExclusion(db, exclCheckReq));
-		}
 		when(TxnStateRequest req = waitNext(proxy.txnState.getFuture())) {
 			state ReplyPromise<Void> reply = req.reply;
 			if(req.last) maxSequence = req.sequence + 1;
 			if (!txnSequences.count(req.sequence)) {
 				txnSequences.insert(req.sequence);
-
+				
 				ASSERT(!commitData.validState.isSet()); // Although we may receive the CommitTransactionRequest for the recovery transaction before all of the TxnStateRequest, we will not get a resolution result from any resolver until the master has submitted its initial (sequence 0) resolution request, which it doesn't do until we have acknowledged all TxnStateRequests
 
 				for(auto& kv : req.data)
@@ -1798,7 +1743,7 @@ ACTOR Future<Void> masterProxyServerCore(
 						if(!data.size()) break;
 						((KeyRangeRef&)txnKeys) = KeyRangeRef( keyAfter(data.back().key, txnKeys.arena()), txnKeys.end );
 
-						MutationsVec mutations;
+						Standalone<VectorRef<MutationRef>> mutations;
 						std::vector<std::pair<MapPair<Key,ServerCacheInfo>,int>> keyInfoData;
 						vector<UID> src, dest;
 						ServerCacheInfo info;
@@ -1829,13 +1774,13 @@ ACTOR Future<Void> masterProxyServerCore(
 								mutations.push_back(mutations.arena(), MutationRef(MutationRef::SetValue, kv.key, kv.value));
 							}
 						}
-
+						
 						//insert keyTag data separately from metadata mutations so that we can do one bulk insert which avoids a lot of map lookups.
-						commitData.keyInfo.rawInsert(keyInfoData);
+						commitData.keyInfo.rawInsert(keyInfoData); 
 
 						Arena arena;
 						bool confChanges;
-						applyMetadataMutations(commitData.dbgid, arena, mutations, commitData.txnStateStore, nullptr, &confChanges, Reference<ILogSystem>(), 0, &commitData.vecBackupKeys, &commitData.keyInfo, &commitData.cacheInfo, commitData.firstProxy ? &commitData.uid_applyMutationsData : nullptr, commitData.commit, commitData.cx, &commitData.committedVersion, &commitData.storageCache, &commitData.tag_popped, true );
+						applyMetadataMutations(commitData.dbgid, arena, mutations, commitData.txnStateStore, NULL, &confChanges, Reference<ILogSystem>(), 0, &commitData.vecBackupKeys, &commitData.keyInfo, commitData.firstProxy ? &commitData.uid_applyMutationsData : NULL, commitData.commit, commitData.cx, &commitData.committedVersion, &commitData.storageCache, &commitData.tag_popped, true );
 					}
 
 					auto lockedKey = commitData.txnStateStore->readValue(databaseLockedKey).get();
