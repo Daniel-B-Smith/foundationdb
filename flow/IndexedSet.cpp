@@ -219,7 +219,7 @@ struct IndexedSetHarness {
 	void erase(K const& k) { s.erase(k); }
 };
 
-TEST_CASE("performance/map/StringRef/IndexedSet") {
+TEST_CASE("disable/performance/map/StringRef/IndexedSet") {
 	Arena arena;
 
 	IndexedSetHarness<StringRef> is;
