@@ -22,7 +22,7 @@
 #define ART_IMPL_H
 
 
-using art_tree =  VersionedBTree::art_tree;
+//using art_tree =  VersionedBTree::art_tree;
 using art_leaf = art_tree::art_leaf;
 #define art_node art_tree::art_node
 
@@ -36,25 +36,25 @@ int art_tree::node_sizes[] = {
         sizeof(art_node4_kv), sizeof(art_node16_kv), sizeof(art_node48_kv), sizeof(art_node256_kv)};
 
 
-VersionedBTree::art_iterator art_tree::insert(KeyRef &k, void *value) {
+art_iterator art_tree::insert(const KeyRef &k, void *value) {
 #define INIT_DEPTH 0
 #define REPLACE 1
     int old_val = 0;
     art_leaf *l = iterative_insert(this->root, &this->root, k, value, INIT_DEPTH, &old_val, REPLACE);
 
     if (!old_val) this->size++;
-    return VersionedBTree::art_iterator(l);
+    return art_iterator(l);
 }
 
-VersionedBTree::art_iterator art_tree::insert_if_absent(KeyRef &k, void *value, int *existing) {
+art_iterator art_tree::insert_if_absent(const KeyRef &k, void *value, int *existing) {
 #define INIT_DEPTH 0
 #define DONTREPLACE 0
     art_leaf *l = iterative_insert(this->root, &this->root, k, value, INIT_DEPTH, existing, DONTREPLACE);
     if (!existing) this->size++;
-    return VersionedBTree::art_iterator(l);
+    return art_iterator(l);
 }
 
-VersionedBTree::art_iterator art_tree::lower_bound(const KeyRef &key) {
+art_iterator art_tree::lower_bound(const KeyRef &key) const {
     if (!size) return art_iterator(nullptr);
     art_node *n = root;
     art_leaf *res = nullptr;
@@ -65,7 +65,7 @@ VersionedBTree::art_iterator art_tree::lower_bound(const KeyRef &key) {
     return art_iterator(res);
 }
 
-VersionedBTree::art_iterator art_tree::upper_bound(const KeyRef &key) {
+art_iterator art_tree::upper_bound(const KeyRef &key) const {
     if (!size) return art_iterator(nullptr);
     art_node *n = root;
     art_leaf *res = nullptr;
@@ -152,7 +152,7 @@ art_leaf *art_tree::maximum(art_node *n) {
     }
 }
 
-void art_tree::art_bound_iterative(art_node *n, const KeyRef &k, int depth, art_leaf **result, bool strict) {
+void art_tree::art_bound_iterative(art_node *n, const KeyRef &k, int depth, art_leaf **result, bool strict) const {
 
     static stack_entry arena[ART_MAX_KEY_LEN]; //Single threaded implementation.
 
@@ -910,7 +910,7 @@ void art_tree::erase(const art_iterator &it) {
     recursive_delete_binary(this->root, &this->root, it.key(), 0);
 }
 
-art_leaf *art_tree::iterative_insert(art_node *root, art_node **root_ptr, KeyRef &k, void *value,
+art_leaf *art_tree::iterative_insert(art_node *root, art_node **root_ptr, const KeyRef &k, void *value,
                                      int depth, int *old, int replace_existing) {
 
     art_node *n = root;
@@ -1405,7 +1405,7 @@ art_leaf *art_tree::make_leaf(const KeyRef &k, void *value) {
     return l;
 }
 
-int art_tree::prefix_mismatch(art_node *n, KeyRef &k, int depth, art_leaf **minout) {
+int art_tree::prefix_mismatch(art_node *n, const KeyRef &k, int depth, art_leaf **minout) {
     const int key_len = k.size();
     const unsigned char *key = (const unsigned char *) k.begin();
     int max_cmp = min(min(ART_MAX_PREFIX_LEN, n->partial_len), key_len - depth);
