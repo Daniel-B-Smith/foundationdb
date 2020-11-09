@@ -18,6 +18,8 @@
  * limitations under the License.
  */
 
+#include <algorithm>
+
 #include "fdbrpc/FailureMonitor.h"
 #include "fdbclient/SystemData.h"
 #include "fdbserver/DataDistribution.actor.h"
@@ -488,6 +490,26 @@ ACTOR Future<Void> brokenPromiseToReady( Future<Void> f ) {
 	return Void();
 }
 
+bool crossesBoundary(KeyRef low, KeyRef high) {
+	static const auto shards = [] {
+		Standalone<VectorRef<KeyRef>> shards;
+		uint8_t key[2];
+		for (int i = 0; i < 512; i++) {
+			key[0] = (i >> 8) & 0xFF;
+			key[1] = i & 0xFF;
+			shards.push_back_deep(shards.arena(), KeyRef(key, 2));
+		}
+		return shards;
+	}();
+
+	auto it = std::lower_bound(shards.begin(), shards.end(), low);
+	if (it == shards.end()) {
+		return false;
+	}
+
+	return *it < high;
+}
+
 Future<Void> shardMerger(
 	DataDistributionTracker* self,
 	KeyRange const& keys,
@@ -512,7 +534,7 @@ Future<Void> shardMerger(
 		TraceEvent( g_network->isSimulated() ? SevError : SevWarnAlways, "ShardMergeTooSoon", self->distributorId).detail("Keys", keys).detail("LastLowBandwidthStartTime", lastLowBandwidthStartTime);
 	}
 
-	int64_t systemBytes = keys.begin >= systemKeys.begin ? shardSize->get().get().metrics.bytes : 0; 
+	int64_t systemBytes = keys.begin >= systemKeys.begin ? shardSize->get().get().metrics.bytes : 0;
 
 	loop {
 		Optional<ShardMetrics> newMetrics;
@@ -525,7 +547,8 @@ Future<Void> shardMerger(
 			newMetrics = nextIter->value().stats->get();
 
 			// If going forward, give up when the next shard's stats are not yet present.
-			if( !newMetrics.present() || shardCount + newMetrics.get().shardCount >= CLIENT_KNOBS->SHARD_COUNT_LIMIT ) {
+			if (!newMetrics.present() || shardCount + newMetrics.get().shardCount >= CLIENT_KNOBS->SHARD_COUNT_LIMIT ||
+			    crossesBoundary(merged.end, nextIter->range().end)) {
 				--nextIter;
 				forwardComplete = true;
 				continue;
@@ -537,7 +560,8 @@ Future<Void> shardMerger(
 			// If going backward, stop when the stats are not present or if the shard is already over the merge
 			//  bounds. If this check triggers right away (if we have not merged anything) then return a trigger
 			//  on the previous shard changing "size".
-			if( !newMetrics.present() || shardCount + newMetrics.get().shardCount >= CLIENT_KNOBS->SHARD_COUNT_LIMIT ) {
+			if (!newMetrics.present() || shardCount + newMetrics.get().shardCount >= CLIENT_KNOBS->SHARD_COUNT_LIMIT ||
+			    crossesBoundary(prevIter->range().begin, merged.begin)) {
 				if( shardsMerged == 1 ) {
 					TEST( true ); // shardMerger cannot merge anything
 					return brokenPromiseToReady( prevIter->value().stats->onChange() );
