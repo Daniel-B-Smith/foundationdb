@@ -31,7 +31,7 @@
 #include <cstring>
 #include <deque>
 #include <random>
-#include "flow/TreeBenchmark.h"
+//#include "flow/TreeBenchmark.h"
 #include "flow/UnitTest.h"
 template <class Node>
 int ISGetHeight(Node* n){
@@ -52,7 +52,7 @@ std::pair<int, int> IndexedSet<T, Metric>::testonly_assertBalanced(typename Inde
 		(1) BST invariant: Every descendant x of n->child[0] has x->data < n->data, and every descendant x of n->child[1] has x->data > n->data
 		(2) Balance invariant: n->balance is the difference between the height (greatest distance to a descendant) of n->child[1] and the height of n->child[0]
 		(3) AVL invariant: n->balance is -1, 0 or 1
-		(4) Metric invariant: n->total is the sum of the metric value with which n and each of its descendants was inserted 
+		(4) Metric invariant: n->total is the sum of the metric value with which n and each of its descendants was inserted
 		(5) Parent invariant: Every child x of n has x->parent==n
 
 	This function checks all of these for all descendants of n.  It assumes that every node was inserted with a metric of 3 in order to check the metric invariant.
@@ -60,7 +60,7 @@ std::pair<int, int> IndexedSet<T, Metric>::testonly_assertBalanced(typename Inde
 		*/
 	if (!n && depth == 0) n = root;
 
-	if (!n) { 
+	if (!n) {
 		return std::make_pair(0, 0);
 	}
 	bool ok = true;
@@ -201,7 +201,7 @@ TEST_CASE("/flow/IndexedSet/strings") {
 	return Void();
 }
 
-template <typename K>
+/*template <typename K>
 struct IndexedSetHarness {
 	using map = IndexedSet<K, int>;
 	using result = typename map::iterator;
@@ -217,7 +217,7 @@ struct IndexedSetHarness {
 	result lower_bound(K const& k) const { return s.lower_bound(k); }
 	result upper_bound(K const& k) const { return s.upper_bound(k); }
 	void erase(K const& k) { s.erase(k); }
-};
+  };
 
 TEST_CASE("disable/performance/map/StringRef/IndexedSet") {
 	Arena arena;
@@ -249,7 +249,7 @@ TEST_CASE("performance/map/int/StdMap") {
 	treeBenchmark(is, &randomInt);
 
 	return Void();
-}
+  }*/
 
 TEST_CASE("performance/flow/IndexedSet/integers") {
 	std::mt19937_64 urng(deterministicRandom()->randomUInt32());

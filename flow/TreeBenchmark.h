@@ -43,40 +43,6 @@ void timedRun(char const* name, T& t, F f) {
 	}
 }
 
-template <typename K>
-struct MapHarness {
-	using map = std::map<K, int>;
-	using key_type = K;
-
-	struct result {
-		typename map::const_iterator it;
-
-		result(typename map::const_iterator it) : it(it) {}
-
-		result& operator++() {
-			it++;
-			return *this;
-		}
-
-		const K& operator*() const { return (*it).first; }
-
-		const K& operator->() const { return it->first; }
-
-		bool operator==(result const& k) const { return it == k.it; }
-	};
-
-	map s;
-
-	void insert(K const& k) { s.insert(std::pair<K, int>(k, 1)); }
-	result find(K const& k) const { return result(s.find(k)); }
-	result not_found() const { return result(s.end()); }
-	result begin() const { return result(s.begin()); }
-	result end() const { return result(s.end()); }
-	result lower_bound(K const& k) const { return result(s.lower_bound(k)); }
-	result upper_bound(K const& k) const { return result(s.upper_bound(k)); }
-	void erase(K const& k) { s.erase(k); }
-};
-
 template <typename T, typename F>
 void treeBenchmark(T& tree, F generateKey) {
 	std::mt19937_64 urng(deterministicRandom()->randomUInt32());
@@ -85,14 +51,14 @@ void treeBenchmark(T& tree, F generateKey) {
 
 	int keyCount = 1000000;
 
-	std::vector<key> keys;
+	std::vector<std::pair<key, int>> keys;
 	for (int i = 0; i < keyCount; i++) {
-		keys.push_back(generateKey());
+		keys.push_back({generateKey(), i / 10000});
 	}
 
-	timedRun("insert", keys, [&tree](key const& k) { tree.insert(k); });
-	/*timedRun("find", keys, [&tree](key const& k) { ASSERT(tree.find(k) != tree.not_found()); });
-	timedRun("lower_bound", keys, [&tree](key const & k) { ASSERT(tree.lower_bound(k) != tree.not_found()); });
+	timedRun("insert", keys, [&tree](std::pair<key, int> const& kv) { tree.insert(kv.first, kv.second); });
+	timedRun("find", keys, [&tree](std::pair<key, int> const& k) { ASSERT(tree.find(k.first) != tree.not_found()); });
+  /*timedRun("lower_bound", keys, [&tree](key const & k) { ASSERT(tree.lower_bound(k) != tree.not_found()); });
 	timedRun("upper_bound", keys, [&tree](key const & k) { tree.upper_bound(k); });
 
 

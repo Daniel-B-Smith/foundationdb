@@ -7,6 +7,8 @@
 #include <cstring>
 #include <iostream>
 
+#include "flow/flow.h"
+
 #define MAX_PREFIX_LEN 8
 
 #define NODE4 1
@@ -77,7 +79,7 @@ public:
 };
 
 template <typename V>
-class Leaf : public Node<V> {
+class Leaf : public Node<V>, FastAllocated<Leaf<V>> {
 public:
 	static int count;
 
@@ -206,7 +208,7 @@ public:
 };
 
 template <typename V>
-class ArtNode4 : public ArtNode<V> {
+class ArtNode4 : public ArtNode<V>, FastAllocated<ArtNode4<V>> {
 public:
 	static int count;
 
@@ -281,7 +283,7 @@ public:
 };
 
 template <typename V>
-class ArtNode16 : public ArtNode<V> {
+class ArtNode16 : public ArtNode<V>, FastAllocated<ArtNode16<V>> {
 public:
 	static int count;
 
@@ -379,7 +381,7 @@ public:
 };
 
 template <typename V>
-class ArtNode48 : public ArtNode<V> {
+class ArtNode48 : public ArtNode<V>, FastAllocated<ArtNode48<V>> {
 public:
 	static int count;
 
@@ -479,7 +481,7 @@ public:
 };
 
 template <typename V>
-class ArtNode256 : public ArtNode<V> {
+class ArtNode256 : public ArtNode<V>, FastAllocated<ArtNode256<V>> {
 public:
 	static int count;
 
@@ -586,7 +588,7 @@ private:
 
 #ifdef USE_VARNODE
 template <typename V>
-class ArtVarNode : public ArtNode<V> {
+class ArtVarNode : public ArtNode<V>, FastAllocated<ArtVarNode<V>> {
 public:
 	static int count;
 
