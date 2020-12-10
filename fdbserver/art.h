@@ -197,7 +197,7 @@ private:
 
     static int signed_prefix_mismatch(art_node *n, const KeyRef &k, int depth, art_leaf **min_leaf, bool find_min);
 
-    static int prefix_mismatch(art_node *n, const KeyRef &k, int depth, art_leaf **minout);
+    static int prefix_mismatch(art_node *n, KeyRef &k, int depth, art_leaf **minout);
 
     static art_leaf *minimum_kv(art_node *n);
 
@@ -209,7 +209,7 @@ private:
 
     static int art_next_prev(art_node *n, unsigned char c, art_node **out);
 
-    void art_bound_iterative(art_node *n, const KeyRef &k, int depth, art_leaf **result, bool strict) const;
+    void art_bound_iterative(art_node *n, const KeyRef &k, int depth, art_leaf **result, bool strict);
 
     static inline int min(int a, int b) {
         return (a < b) ? a : b;
@@ -253,7 +253,7 @@ private:
 
     static void copy_header(art_node *dest, art_node *src);
 
-    art_leaf *iterative_insert(art_node *root, art_node **root_ptr, const KeyRef &k, void *value,
+    art_leaf *iterative_insert(art_node *root, art_node **root_ptr, KeyRef &k, void *value,
                                int depth, int *old, int replace_existing);
 
     art_leaf *insert_leaf(art_node *n, art_node **ref, const KeyRef &k, void *value, int depth,
@@ -291,13 +291,13 @@ public:
         this->size = 0;
     }
 
-    art_iterator lower_bound(const KeyRef &k) const;
+    art_iterator lower_bound(const KeyRef &k);
 
-    art_iterator upper_bound(const KeyRef &k) const;
+    art_iterator upper_bound(const KeyRef &k);
 
-    art_iterator insert(const KeyRef &key, void *value);
+    art_iterator insert(KeyRef &key, void *value);
 
-    art_iterator insert_if_absent(const KeyRef &key, void *value, int *replaced);
+    art_iterator insert_if_absent(KeyRef &key, void *value, int *replaced);
 
     void erase(const art_iterator &it);
 
