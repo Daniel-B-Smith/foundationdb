@@ -58,22 +58,7 @@ TEST_CASE("performance/map/StringRef/VersionedMap") {
 struct partHarness {
 	using map = ArtTree<int>;
 	using key_type = KeyRef;
-
-	struct result {
-    Leaf<int>* leaf;
-
-    result& operator++() {
-      leaf = leaf->next;
-      return *this;
-    }
-
-    KeyRef operator*() const { return KeyRef(leaf->key, leaf->key_len); }
-
-    KeyRef operator->() const { return KeyRef(leaf->key, leaf->key_len); }
-
-    bool operator==(result const& k) const { return leaf == k.leaf; }
-    bool operator != (result const& k) const { return leaf != k.leaf; }
-  };
+  using iterator = ArtTree<int>::iterator;
 
   partHarness() {
     snapshots.reserve(1000000);
@@ -90,17 +75,19 @@ struct partHarness {
     }
     snapshots.back().insert(k.begin(), k.size(), 1337);
   }
-	result find(KeyRef const& k) {
-    return result{snapshots.back().search(k.begin(), k.size())};
+	iterator find(KeyRef const& k) {
+    iterator iter;
+    iter.leaf = snapshots.back().search(k.begin(), k.size());
+    return iter;
   }
-	result not_found() const { return result{nullptr}; }
-  result begin() const { return result{Node<int>::minimum(snapshots.back().root)}; }
-	result end() const { return not_found(); }
-	result lower_bound(KeyRef const& k) {
-    return result{snapshots.back().lower_bound(k.begin(), k.size())};
+	iterator not_found() const { return {}; }
+  /*result begin() const { return result{Node<int>::minimum(snapshots.back().root)}; }
+    result end() const { return not_found(); }*/
+	iterator lower_bound(KeyRef const& k) {
+    return snapshots.back().lower_bound(k.begin(), k.size());
   }
-	result upper_bound(KeyRef const& k) {
-    return result{snapshots.back().upper_bound(k.begin(), k.size())};
+	iterator upper_bound(KeyRef const& k) {
+    return snapshots.back().upper_bound(k.begin(), k.size());
   }
 
     /*void erase(KeyRef const& k) {
@@ -142,9 +129,9 @@ TEST_CASE("performance/map/unit_test/lower_bound") {
   }
 
   for (int i = 0; i < sorted.size(); i++) {
-    auto* l = tree.lower_bound(sorted[i].begin(), sorted[i].size());
-    ASSERT(l);
-    ASSERT(KeyRef(l->key, l->key_len) == sorted[i]);
+    auto it = tree.lower_bound(sorted[i].begin(), sorted[i].size());
+    ASSERT(it);
+    ASSERT(*it == sorted[i]);
   }
 
   int randomReads = 10000;
@@ -155,9 +142,15 @@ TEST_CASE("performance/map/unit_test/lower_bound") {
     if (it == sorted.end()) {
       ASSERT(!tree.lower_bound(key.begin(), key.size()));
     } else {
-      auto* l = tree.lower_bound(key.begin(), key.size());
-      ASSERT(l);
-      ASSERT(KeyRef(l->key, l->key_len) == *it);
+      auto lb = tree.lower_bound(key.begin(), key.size());
+      ASSERT(lb);
+      if (*lb != *it) {
+        std::cout << "key: " << key.printable() << "\n";
+        std::cout << "expecting: " << it->printable() << "\n";
+        debug = true;
+        tree.lower_bound(key.begin(), key.size());
+        ASSERT(false);
+      }
     }
   }
 
@@ -168,15 +161,15 @@ TEST_CASE("performance/map/unit_test/lower_bound") {
     if (it == sorted.end()) {
       ASSERT(!tree.upper_bound(key.begin(), key.size()));
     } else {
-      auto* l = tree.upper_bound(key.begin(), key.size());
-      ASSERT(l);
-      ASSERT(KeyRef(l->key, l->key_len) == *it);
+      auto ub = tree.upper_bound(key.begin(), key.size());
+      ASSERT(ub);
+      ASSERT(*ub == *it);
     }
   }
 
   // iteration
   // TODO: Add proper `begin()`
-  auto* l = Node<int>::minimum(tree.root);
+  /*auto* l = Node<int>::minimum(tree.root);
   auto s = sorted.begin();
   while (l && s != sorted.end()) {
     ASSERT(KeyRef(l->key, l->key_len) == *s);
@@ -184,59 +177,7 @@ TEST_CASE("performance/map/unit_test/lower_bound") {
     l = l->next;
   }
   ASSERT(!l);
-  ASSERT(s == sorted.end());
-
-
-	l = tree.lower_bound(sorted.begin()->begin(), sorted.begin()->size());
-  ASSERT(l);
-  ASSERT(*sorted.begin() == MakeKeyRef(l));
-	for (const auto& k : sorted) {
-    ASSERT(l);
-		ASSERT(k == MakeKeyRef(l));
-		l = l->next;
-	}
-	ASSERT(!l);
-
-
-  return Void();
-}
-
-
-TEST_CASE("performance/map/unit_test") {
-	Arena arena;
-	partHarness tree;
-
-	int keyCount = 100000;
-
-	std::vector<std::pair<KeyRef, int>> keys;
-  std::vector<KeyRef> sorted;
-	for (int i = 0; i < keyCount; i++) {
-		keys.push_back({randomStr(arena), i / 50});
-    sorted.push_back(keys.back().first);
-	}
-
-	std::sort(sorted.begin(), sorted.end());
-	sorted.resize(std::unique(sorted.begin(), sorted.end()) - sorted.begin());
-
-  for (const auto& kv : keys) {
-    tree.insert(kv.first, 0);
-  }
-
-  int iter = 0;
-  tree.snapshots[0].iter([&](const unsigned char* c, uint32_t l, int) {
-    ASSERT(sorted[iter] == KeyRef(c, l));
-    ++iter;
-  });
-
-  for (const auto& kv : keys) {
-    // std::cout << "key number: " << kv.second << "\n";
-    if (tree.lower_bound(kv.first) == tree.not_found()) {
-      std::cout << kv.first.printable() << "\n";
-      debug = true;
-      tree.lower_bound(kv.first);
-      return Void();
-    }
-  }
+  ASSERT(s == sorted.end());*/
 
   return Void();
 }

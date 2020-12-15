@@ -62,7 +62,7 @@ void treeBenchmark(T& tree, F generateKey) {
 	timedRun("upper_bound", keys, [&tree](std::pair<key, int> const & k) { tree.upper_bound(k.first); });
 
 
-	std::sort(keys.begin(), keys.end());
+	/*std::sort(keys.begin(), keys.end());
 	keys.resize(std::unique(keys.begin(), keys.end()) - keys.begin());
 
 	auto iter = tree.lower_bound(keys.begin()->first);
@@ -77,7 +77,7 @@ void treeBenchmark(T& tree, F generateKey) {
 
 	timedRun("find (sorted)", keys, [&tree](std::pair<key, int> const& k) { ASSERT(tree.find(k.first) != tree.end()); });
 
-	std::shuffle(keys.begin(), keys.end(), urng);
+	std::shuffle(keys.begin(), keys.end(), urng);*/
 
 	//timedRun("erase", keys, [&tree](key const& k) { tree.erase(k); });
 	//ASSERT(tree.begin() == tree.end());

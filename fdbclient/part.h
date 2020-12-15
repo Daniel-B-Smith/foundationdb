@@ -155,8 +155,6 @@ public:
 	V value;
 	uint32_t key_len;
 	unsigned char* key;
-  Leaf<V>* prev = nullptr;
-  Leaf<V>* next = nullptr;
 };
 
 template <typename V>
@@ -938,10 +936,11 @@ public:
         std::cout << "cmp: " << cmp << "\n";
       }
       ASSERT(l);
-      *result = l;
       if (cmp < 0 || (cmp == 0 && strict)) {
-        *result = (*result)->next;
+        if (debug) std::cout << "We must backtrack on the leaf!";
+        return BoundCheck::BACKTRACK;
       }
+      *result = l;
       return BoundCheck::FOUND;
     }
 
@@ -989,32 +988,47 @@ public:
     unsigned char key;
   };
 
-  Leaf<V>* bound_iterative(Node<V>* n, const unsigned char* key, int key_len, bool strict) {
-    static stack_entry stack[PART_MAX_KEY_LEN]; // This makes the class thread-hostile.
+  struct iterator {
+    Leaf<V>* leaf = nullptr;
+    std::vector<stack_entry> stack;
+
+    // TODO: remove this and replace with `end()`.
+    operator bool() const { return leaf != nullptr; }
+    KeyRef operator*() const { return KeyRef(leaf->key, leaf->key_len); }
+
+    bool operator==(const iterator& o) {
+      return leaf == o.leaf;
+    }
+  };
+
+  iterator bound_iterative(Node<V>* n, const unsigned char* key, int key_len, bool strict) {
+    iterator iter;
+    iter.stack.reserve(10);
+    ASSERT(!iter.leaf);
 
     int depth = 0;
-    int idx = 0;
-    Leaf<V>* result = nullptr;
     while(n) {
-      auto check = check_bound_node(n, key, key_len, &depth, &result, strict);
+      auto check = check_bound_node(n, key, key_len, &depth, &iter.leaf, strict);
       if (check == BoundCheck::FOUND) {
-        return result;
+        return iter;
       }
 
       if (check == BoundCheck::BACKTRACK) break;
-      // If `n` were a leaf node, we would have already reaturned it.
+      // If `n` were a leaf node, we would have already returned it.
       auto* an = static_cast<ArtNode<V>*>(n);
 
       // Keep going down the tree.
-      stack[++idx] = stack_entry{an, key[depth]};
+      // TODO: This is probably done too early.
+      iter.stack.push_back(stack_entry{an, key[depth]});
 
       auto [child, matches] = ArtNode<V>::lower_bound(an, key[depth]);
       // Time to backtrack.
-      if (!child) break;;
+      if (!child) break;
       // If the character isn't an exact match, every key under this node is greater than
       // the input key. We just need to grab the smallest one.
       if (!matches && child) {
-        return ArtNode<V>::minimum(*child);
+        iter.leaf = ArtNode<V>::minimum(*child);
+        return iter;
       }
       n = *child;
       depth = depth + 1;
@@ -1024,26 +1038,28 @@ public:
     if (debug) {
       std::cout << "backtracking\n";
     }
-    while (idx >= 0) {
-      auto entry = stack[idx--];
+    while (!iter.stack.empty()) {
+      auto entry = iter.stack.back();
+      iter.stack.pop_back();
       if (debug) {
         std::cout << "char: " << entry.key << "\n";
       }
       auto* an = ArtNode<V>::find_next(entry.node, entry.key);
       if (an) {
-        return ArtNode<V>::minimum(*an);
+        iter.leaf = ArtNode<V>::minimum(*an);
+        return iter;
       }
     }
-    return nullptr;
+    return iter;
   }
 
-  Leaf<V>* lower_bound(const unsigned char* key, int key_len) {
-    if (!root) return nullptr;
+  iterator lower_bound(const unsigned char* key, int key_len) {
+    if (!root) return {};
     return bound_iterative(root, key, key_len, false);
   }
 
-  Leaf<V>* upper_bound(const unsigned char* key, int key_len) {
-    if (!root) return nullptr;
+  iterator upper_bound(const unsigned char* key, int key_len) {
+    if (!root) return {};
     return bound_iterative(root, key, key_len, true);
   }
 
@@ -1081,34 +1097,10 @@ public:
 		return NULL;
 	}
 
-	void insert(const unsigned char* key, int key_len, V value) {
-    // TODO: Consider adding next/prev logic to insert to avoid this full lookup.
-    Leaf<V>* next = lower_bound(key, key_len);
-		auto* l = Node<V>::insert(root, &root, key, key_len, value, 0, false);
-    ASSERT(l);
-    ASSERT(MakeKeyRef(l) == KeyRef(key, key_len));
-    if (!next) {
-      if (tail) {
-        tail->next = l;
-        ASSERT(MakeKeyRef(tail) < MakeKeyRef(l));
-      }
-      l->prev = tail;
-      tail = l;
-    } else {
-      ASSERT(MakeKeyRef(l) < MakeKeyRef(next));
-      l->next = next;
-      l->prev = next->prev;
-      if (l->prev) {
-        l->prev->next = l;
-
-        if (MakeKeyRef(l->prev) > MakeKeyRef(l)) {
-          std::cout << "key: " << MakeKeyRef(l).printable() << "\n";
-          std::cout << "prev: " << MakeKeyRef(l->prev).printable() << "\n";
-          ASSERT(false);
-        }
-      }
-      next->prev = l;
-    }
+	iterator insert(const unsigned char* key, int key_len, V value) {
+    iterator iter;
+		iter.leaf = Node<V>::insert(root, &root, key, key_len, value, 0, false);
+    return iter;
 	}
 
 	void iter(std::function<void(const unsigned char*, uint32_t, V)> cb) { Node<V>::iter(root, cb); }
