@@ -7,6 +7,8 @@
 #include <cstring>
 #include <iostream>
 
+#include <bitset>
+
 #include "flow/flow.h"
 
 #define MAX_PREFIX_LEN 8
@@ -17,6 +19,9 @@
 #define NODE256 4
 #define LEAF 5
 #define VARNODE 6
+
+#define PART_MAX_KEY_LEN 10000
+
 
 bool debug = false;
 
@@ -54,9 +59,9 @@ public:
 
 	static Node<V>* clone(const Node<V>* n);
 	static Node<V>* reorder_leaves(Node<V>* n);
-	static const Leaf<V>* minimum(const Node<V>* n);
-	static void insert(Node<V>* n, Node<V>** ref, const unsigned char* key, int key_len, V value, int depth,
-	                   bool force_clone);
+	static Leaf<V>* minimum(Node<V>* n);
+	static Leaf<V>* insert(Node<V>* n, Node<V>** ref, const unsigned char* key, int key_len, V value, int depth,
+                         bool force_clone);
 	static void iter(Node<V>* n, std::function<void(const unsigned char*, uint32_t, V)> cb);
 	static int decrement_refcount(Node<V>* n);
 	static void iter_nodes(Node<V>* n, std::function<bool(Node*, int)> cb, int depth);
@@ -108,7 +113,7 @@ public:
 		return memcmp(this->key, key, key_len);
 	}
 
-	const Leaf<V>* minimum() const { return this; }
+	Leaf<V>* minimum() { return this; }
 
 	int longest_common_prefix(Leaf<V>* other, int depth) {
 		int max_cmp = min(key_len, other->key_len) - depth;
@@ -121,7 +126,7 @@ public:
 		return idx;
 	}
 
-	void insert(Node<V>** ref, const unsigned char* key, int key_len, V value, int depth, bool force_clone);
+	Leaf<V>* insert(Node<V>** ref, const unsigned char* key, int key_len, V value, int depth, bool force_clone);
 
 	void iter(std::function<void(const unsigned char*, uint32_t, V)> cb) { cb(key, key_len, value); }
 
@@ -136,6 +141,7 @@ public:
 
 	int decrement_refcount() {
 		if (--this->refcount <= 0) {
+      std::cout << "fucker\n";
 			count--;
 			// delete[] key;
 			// delete[] value;
@@ -149,6 +155,8 @@ public:
 	V value;
 	uint32_t key_len;
 	unsigned char* key;
+  Leaf<V>* prev = nullptr;
+  Leaf<V>* next = nullptr;
 };
 
 template <typename V>
@@ -165,6 +173,7 @@ public:
 	 * Returns the number of prefix characters shared between
 	 * the key and node.
 	 */
+  // TODO: simd this
 	int check_prefix(const unsigned char* key, int key_len, int depth) {
 		int max_cmp = min(min(partial_len, MAX_PREFIX_LEN), key_len - depth);
 		int idx;
@@ -177,7 +186,7 @@ public:
 	/**
 	 * Calculates the index at which the prefixes mismatch
 	 */
-	int prefix_mismatch(const unsigned char* key, int key_len, int depth) const {
+	int prefix_mismatch(const unsigned char* key, int key_len, int depth) {
 		int max_cmp = min(min(MAX_PREFIX_LEN, partial_len), key_len - depth);
 		int idx;
 		for (idx = 0; idx < max_cmp; idx++) {
@@ -196,11 +205,35 @@ public:
 		return idx;
 	}
 
+	int signed_prefix_mismatch(const unsigned char* key, int key_len, int depth) {
+		int max_cmp = min(min(MAX_PREFIX_LEN, partial_len), key_len - depth);
+		int idx;
+		for (idx = 0; idx < max_cmp; idx++) {
+			if (partial[idx] != key[depth + idx]) return partial[idx] - key[depth + idx];
+		}
+
+		// If the prefix is short we can avoid finding a leaf
+		if (partial_len > MAX_PREFIX_LEN) {
+			// Prefix is longer than what we've checked, find a leaf
+			const Leaf<V>* l = Node<V>::minimum(this);
+			max_cmp = min(l->key_len, key_len) - depth;
+			for (; idx < max_cmp; idx++) {
+				if (l->key[idx + depth] != key[depth + idx]) return l->key[idx + depth] - key[depth + idx];
+			}
+		}
+		return 0;
+	}
+
 	static Node<V>** find_child(ArtNode<V>* n, unsigned char c);
+  // Finds the node immediately after `c`.
+  static Node<V>** find_next(ArtNode<V>* n, unsigned char c);
+
+  // The bool argument is returning whether the char was an exact match or not.
+	static std::pair<Node<V>**, bool> lower_bound(ArtNode<V>* n, unsigned char c);
 
 	static void add_child(ArtNode<V>* n, Node<V>** ref, unsigned char c, Node<V>* child);
 
-	void insert(Node<V>** ref, const unsigned char* key, int key_len, V value, int depth, bool force_clone);
+	Leaf<V>* insert(Node<V>** ref, const unsigned char* key, int key_len, V value, int depth, bool force_clone);
 
 	uint8_t num_children;
 	uint8_t partial_len;
@@ -228,6 +261,7 @@ private:
 	}
 
 public:
+  // TODO: Consider unrolling these loops.
 	Node<V>** find_child(unsigned char c) {
 		for (int i = 0; i < this->num_children; i++) {
 			if (keys[i] == c) {
@@ -237,7 +271,38 @@ public:
 		return NULL;
 	}
 
-	const Leaf<V>* minimum() const {
+	Node<V>** find_next(unsigned char c) {
+    if(debug)std::cout << "next art4\n";
+		for (int i = 0; i < this->num_children; i++) {
+      if(debug)std::cout << keys[i] << " ";
+			if (keys[i] > c) {
+        if(debug)std::cout << "\n";
+				return &children[i];
+			}
+		}
+    if(debug)std::cout << "\n";
+		return NULL;
+	}
+
+  std::pair<Node<V>**, bool> lower_bound(unsigned char c) {
+    if (debug) {
+      std::cout << "art 4\n";
+      std::cout << "char: " << c << '\n';
+    }
+		for (int i = 0; i < this->num_children; i++) {
+      if (debug) {
+        std::cout << keys[i] << ' ';
+      }
+			if (keys[i] >= c) {
+        if(debug)std::cout << "\n";
+				return {&children[i], keys[i] == c};
+			}
+		}
+    if(debug)std::cout<<"\n";
+		return {nullptr, false};
+	}
+
+	Leaf<V>* minimum() {
 		if (children[0]) return Node<V>::minimum(children[0]);
 		return NULL;
 	}
@@ -281,6 +346,16 @@ public:
 	uint8_t keys[4];
 	Node<V>* children[4];
 };
+
+// TODO: move this to a portable header.
+#define _mm_cmpge_epu8(a, b) \
+        _mm_cmpeq_epi8(_mm_max_epu8(a, b), a)
+
+#define _mm_cmple_epu8(a, b) _mm_cmpge_epu8(b, a)
+
+#define _mm_cmpgt_epu8(a, b) \
+        _mm_xor_si128(_mm_cmple_epu8(a, b), _mm_set1_epi8(-1))
+
 
 template <typename V>
 class ArtNode16 : public ArtNode<V>, FastAllocated<ArtNode16<V>> {
@@ -335,7 +410,85 @@ public:
 		return NULL;
 	}
 
-	const Leaf<V>* minimum() const {
+	Node<V>** find_next(unsigned char c) {
+    if(debug)std::cout << "next art16\n";
+		for (int i = 0; i < this->num_children; i++) {
+			if (keys[i] > c) {
+				return &children[i];
+			}
+		}
+    return nullptr;
+
+		// Compare the key to all 16 stored keys
+		__m128i cmp = _mm_cmpgt_epi8(_mm_loadu_si128((__m128i*)keys), _mm_set1_epi8(c));
+		// Use a mask to ignore the last child and children that don't exist
+		int mask = (1 << this->num_children) - 1;
+		int bitfield = _mm_movemask_epi8(cmp) & mask;
+
+		/*
+		 * If we have a match (any bit set) then we can
+		 * return the pointer match using ctz to get
+		 * the index.
+		 */
+		if (bitfield) {
+			return &children[__builtin_ctz(bitfield)];
+		}
+		return NULL;
+	}
+
+  std::pair<Node<V>**, bool> lower_bound(unsigned char c) {
+    if (debug) {
+      std::cout << "art16\n";
+      std::cout << std::string(1, c) << "\n";
+      std::cout << int(c) << "\n";
+    }
+
+		// Compare the key to all 16 stored keys
+		__m128i cmp = _mm_cmpgt_epi8(_mm_set1_epi8(c), _mm_loadu_si128((__m128i*)keys));
+		// Use a mask to ignore children that don't exist
+		int mask = (1 << this->num_children) - 1;
+		int bitfield = ~_mm_movemask_epi8(cmp) & mask;
+
+    if (debug) {
+      std::cout << "bits: " << std::bitset<32>(bitfield) << "\n";
+      std::cout << "mask: " << std::bitset<32>(mask) << "\n";
+      std::cout << "cmp: " << std::bitset<32>(_mm_movemask_epi8(cmp)) << "\n";
+      for (int i = 0; i < this->num_children; ++i) {
+        std::cout << int(keys[i]) << " ";
+      }
+      std::cout << "\n";
+    }
+
+		/*
+		 * If we have a match (any bit set) then we can
+		 * return the pointer match using ctz to get
+		 * the index.
+		 */
+		if (bitfield) {
+      int idx = __builtin_ctz(bitfield);
+      if (debug) {
+        std::cout << "index: " << idx << "\n";
+      }
+      if (keys[idx] < c) {
+        std::cout << "char: " << int(c) << "\n";
+        std::cout << "index: " << idx << "\n";
+        std::cout << "bits: " << std::bitset<32>(bitfield) << "\n";
+        std::cout << "mask: " << std::bitset<32>(mask) << "\n";
+        for (int i = 0; i < this->num_children; ++i) {
+          std::cout << int(keys[i]) << " ";
+        }
+        std::cout << "\n";
+        ASSERT(false);
+      }
+      return {&children[idx], keys[idx] == c};
+		}
+    if (c == keys[this->num_children-1]) {
+      return {&children[this->num_children-1], true};
+    }
+		return {nullptr, false};
+	}
+
+	Leaf<V>* minimum() {
 		if (children[0]) return Node<V>::minimum(children[0]);
 		return NULL;
 	}
@@ -376,6 +529,7 @@ public:
 		return 0;
 	}
 
+  // TODO: Consider just storing this directly as a __m128i.
 	uint8_t keys[16];
 	Node<V>* children[16];
 };
@@ -422,7 +576,46 @@ public:
 		return NULL;
 	}
 
-	const Leaf<V>* minimum() const {
+	Node<V>** find_next(unsigned char c) {
+    if(debug)std::cout << "next art48\n";
+    if (c == 255) return nullptr;
+    // TODO: simd
+    for (int i = c + 1; i < 256; ++i) {
+      if (keys[i]) {
+        return &children[keys[i] - 1];
+      }
+    }
+		return nullptr;
+	}
+
+  std::pair<Node<V>**, bool> lower_bound(unsigned char c) {
+    if (debug) {
+      std::cout << "art48\n";
+      std::cout << c << "\n";
+    }
+
+		int idx = keys[c];
+    if (idx) {
+      return {&children[idx - 1], true};
+    }
+
+    // TODO: simd
+    for (int i = c + 1; i < 256; ++i) {
+      if (debug) {
+        std::cout << "char: " << i << "\n";
+        std::cout << "key: " << int(keys[i]) << "\n";
+      }
+      if (keys[i]) {
+        return {&children[keys[i] - 1], false};
+      }
+    }
+    if (debug) {
+      std::cout << "didn't find it\n";
+    }
+		return {nullptr, false};
+	}
+
+	Leaf<V>* minimum() {
 		int idx = 0;
 		while (!keys[idx]) idx++;
 		auto child = children[keys[idx] - 1];
@@ -526,7 +719,43 @@ public:
 		return NULL;
 	}
 
-	const Leaf<V>* minimum() const {
+	Node<V>** find_next(unsigned char c) {
+    if (debug) {
+      std::cout << "next art256\n";}
+    if (c == 255) return nullptr;
+    // TODO: simd
+    for (int i = c + 1; i < 256; ++i) {
+      if(debug)std::cout << (char)i << " ";
+      if (children[i]) {
+        if(debug)std::cout << "\n";
+        return &children[i];
+      }
+    }
+    if(debug)std::cout << "\n";
+		return nullptr;
+	}
+
+  std::pair<Node<V>**, bool> lower_bound(unsigned char c) {
+    if (debug) {
+    std::cout << "art256\n";
+    std::cout << std::string(1, c) << "\n";
+    }
+
+		if (children[c]) return {&children[c], true};
+    // TODO: simd
+    for (int i = c + 1; i < 256; ++i) {
+      if (children[i]) {
+        return {&children[i], false};
+      }
+    }
+
+    if (debug) {
+      std::cout << "didn't find it\n";
+    }
+		return {nullptr, false};
+	}
+
+	Leaf<V>* minimum() {
 		int idx = 0;
 		while (!children[idx]) idx++;
 		if (children[idx]) return Node<V>::minimum(children[idx]);
@@ -623,7 +852,7 @@ public:
 		return NULL;
 	}
 
-	const Leaf<V>* minimum() const {
+  Leaf<V>* minimum() {
 		int idx = 0;
 		while (!keys[idx]) idx++;
 		auto child = children[keys[idx] - 1];
@@ -663,6 +892,11 @@ public:
 };
 #endif
 
+template<class V>
+KeyRef MakeKeyRef(Leaf<V>* l) {
+  return KeyRef(l->key, l->key_len);
+}
+
 template <typename V>
 class ArtTree {
 public:
@@ -687,7 +921,133 @@ public:
 		return b;
 	}
 
-	V* search(const unsigned char* key, int key_len) {
+  enum class BoundCheck {
+    FOUND = 0,
+    DEPTH = 1,
+    BACKTRACK = 2,
+  };
+
+  BoundCheck check_bound_node(Node<V> *n, const unsigned char* key, int key_len, int *depth_p, Leaf<V> **result, bool strict) {
+    if (n->type == LEAF) {
+      auto* l = static_cast<Leaf<V>*>(n);
+      int len = std::min(key_len, (int)l->key_len);
+      // TODO: Take advantage of `depth`.
+      int cmp = std::memcmp(l->key, key, len);
+      if (debug) {
+        std::cout << "leafy key: " << std::string((const char*)l->key, l->key_len) << "\n";
+        std::cout << "cmp: " << cmp << "\n";
+      }
+      ASSERT(l);
+      *result = l;
+      if (cmp < 0 || (cmp == 0 && strict)) {
+        *result = (*result)->next;
+      }
+      return BoundCheck::FOUND;
+    }
+
+    auto* an = static_cast<ArtNode<V>*>(n);
+
+    int depth = *depth_p;
+    // Case 1: This node already has a longer key than our key.
+    if (key_len <= (depth + an->partial_len)) {
+      if (!an->partial_len) {
+        *result = ArtNode<V>::minimum(an);
+        return BoundCheck::FOUND;
+      }
+      int prefix_differs = an->signed_prefix_mismatch(key, key_len, depth);
+      // The search key is greater than the smallest key in this subtree. Backtrack.
+      if (prefix_differs < 0) {
+        return BoundCheck::BACKTRACK;
+      } else {
+        // Our key is less than or equal to the smallest key in this subtree, so return it.
+        // TODO: This sometimes duplicates work with `signed_check_prefix`.
+        *result = ArtNode<V>::minimum(an);
+        return BoundCheck::FOUND;
+      }
+    }
+    // Case 2: We need to keep going down the tree.
+    if (!an->partial_len) {
+      return BoundCheck::DEPTH;
+    }
+    int prefix_differs = an->signed_prefix_mismatch(key, key_len, depth);
+    if (prefix_differs == 0) {
+      // Any mismatch happens after the prefix covered by the node, so it is fine to check its children
+      *depth_p += an->partial_len;
+      return BoundCheck::DEPTH;
+    }
+    // A mismatch happens in the prefix of this node. Now there are two options
+    // The subtree stores smaller keys. Have to backtrack
+    if (prefix_differs < 0) {
+      return BoundCheck::BACKTRACK;
+    }
+    *result = ArtNode<V>::minimum(an);
+    return BoundCheck::FOUND;
+  }
+
+  struct stack_entry {
+    ArtNode<V> *node;
+    unsigned char key;
+  };
+
+  Leaf<V>* bound_iterative(Node<V>* n, const unsigned char* key, int key_len, bool strict) {
+    static stack_entry stack[PART_MAX_KEY_LEN]; // This makes the class thread-hostile.
+
+    int depth = 0;
+    int idx = 0;
+    Leaf<V>* result = nullptr;
+    while(n) {
+      auto check = check_bound_node(n, key, key_len, &depth, &result, strict);
+      if (check == BoundCheck::FOUND) {
+        return result;
+      }
+
+      if (check == BoundCheck::BACKTRACK) break;
+      // If `n` were a leaf node, we would have already reaturned it.
+      auto* an = static_cast<ArtNode<V>*>(n);
+
+      // Keep going down the tree.
+      stack[++idx] = stack_entry{an, key[depth]};
+
+      auto [child, matches] = ArtNode<V>::lower_bound(an, key[depth]);
+      // Time to backtrack.
+      if (!child) break;;
+      // If the character isn't an exact match, every key under this node is greater than
+      // the input key. We just need to grab the smallest one.
+      if (!matches && child) {
+        return ArtNode<V>::minimum(*child);
+      }
+      n = *child;
+      depth = depth + 1;
+    }
+
+    // Handle backtracking.
+    if (debug) {
+      std::cout << "backtracking\n";
+    }
+    while (idx >= 0) {
+      auto entry = stack[idx--];
+      if (debug) {
+        std::cout << "char: " << entry.key << "\n";
+      }
+      auto* an = ArtNode<V>::find_next(entry.node, entry.key);
+      if (an) {
+        return ArtNode<V>::minimum(*an);
+      }
+    }
+    return nullptr;
+  }
+
+  Leaf<V>* lower_bound(const unsigned char* key, int key_len) {
+    if (!root) return nullptr;
+    return bound_iterative(root, key, key_len, false);
+  }
+
+  Leaf<V>* upper_bound(const unsigned char* key, int key_len) {
+    if (!root) return nullptr;
+    return bound_iterative(root, key, key_len, true);
+  }
+
+	Leaf<V>* search(const unsigned char* key, int key_len) {
 		Node<V>* n = root;
 		int prefix_len, depth = 0;
 		while (n) {
@@ -696,7 +1056,7 @@ public:
 				Leaf<V>* l = static_cast<Leaf<V>*>(n);
 				// Check if the expanded path matches
 				if (!l->matches(key, key_len)) {
-					return &l->value;
+					return l;
 				} else {
 					return NULL;
 				}
@@ -722,7 +1082,33 @@ public:
 	}
 
 	void insert(const unsigned char* key, int key_len, V value) {
-		Node<V>::insert(root, &root, key, key_len, value, 0, false);
+    // TODO: Consider adding next/prev logic to insert to avoid this full lookup.
+    Leaf<V>* next = lower_bound(key, key_len);
+		auto* l = Node<V>::insert(root, &root, key, key_len, value, 0, false);
+    ASSERT(l);
+    ASSERT(MakeKeyRef(l) == KeyRef(key, key_len));
+    if (!next) {
+      if (tail) {
+        tail->next = l;
+        ASSERT(MakeKeyRef(tail) < MakeKeyRef(l));
+      }
+      l->prev = tail;
+      tail = l;
+    } else {
+      ASSERT(MakeKeyRef(l) < MakeKeyRef(next));
+      l->next = next;
+      l->prev = next->prev;
+      if (l->prev) {
+        l->prev->next = l;
+
+        if (MakeKeyRef(l->prev) > MakeKeyRef(l)) {
+          std::cout << "key: " << MakeKeyRef(l).printable() << "\n";
+          std::cout << "prev: " << MakeKeyRef(l->prev).printable() << "\n";
+          ASSERT(false);
+        }
+      }
+      next->prev = l;
+    }
 	}
 
 	void iter(std::function<void(const unsigned char*, uint32_t, V)> cb) { Node<V>::iter(root, cb); }
@@ -822,6 +1208,7 @@ public:
 
 	// private:
 	Node<V>* root;
+  Leaf<V>* tail = nullptr;
 };
 
 #include "fdbclient/part_impl.h"

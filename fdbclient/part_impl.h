@@ -61,23 +61,23 @@ Node<V>* Node<V>::reorder_leaves(Node<V>* n) {
 }
 
 template <typename V>
-const Leaf<V>* Node<V>::minimum(const Node<V>* n) {
+Leaf<V>* Node<V>::minimum(Node<V>* n) {
 	if (!n) return NULL;
 
 	switch (n->type) {
 	case NODE4:
-		return static_cast<const ArtNode4<V>*>(n)->minimum();
+		return static_cast<ArtNode4<V>*>(n)->minimum();
 	case NODE16:
-		return static_cast<const ArtNode16<V>*>(n)->minimum();
+		return static_cast<ArtNode16<V>*>(n)->minimum();
 	case NODE48:
-		return static_cast<const ArtNode48<V>*>(n)->minimum();
+		return static_cast<ArtNode48<V>*>(n)->minimum();
 	case NODE256:
-		return static_cast<const ArtNode256<V>*>(n)->minimum();
+		return static_cast<ArtNode256<V>*>(n)->minimum();
 	case LEAF:
-		return static_cast<const Leaf<V>*>(n)->minimum();
+		return static_cast<Leaf<V>*>(n)->minimum();
 #ifdef USE_VARNODE
 	case VARNODE:
-		return static_cast<const ArtVarNode<V>*>(n)->minimum();
+		return static_cast<ArtVarNode<V>*>(n)->minimum();
 #endif
 	}
 
@@ -85,11 +85,13 @@ const Leaf<V>* Node<V>::minimum(const Node<V>* n) {
 }
 
 template <typename V>
-void Node<V>::insert(Node<V>* n, Node<V>** ref, const unsigned char* key, int key_len, V value, int depth,
-                     bool force_clone) {
+Leaf<V>* Node<V>::insert(Node<V>* n, Node<V>** ref, const unsigned char* key, int key_len, V value, int depth,
+                         bool force_clone) {
 	// If we are at a NULL node, inject a leaf
 	if (!n) {
-		return Node<V>::switch_ref(ref, Leaf<V>::create(key, key_len, value));
+    auto* l = Leaf<V>::create(key, key_len, value);
+		Node<V>::switch_ref(ref, l);
+    return l;
 	} else {
 		switch (n->type) {
 		case NODE4:
@@ -216,6 +218,50 @@ Node<V>** ArtNode<V>::find_child(ArtNode<V>* n, unsigned char c) {
 }
 
 template <typename V>
+Node<V>** ArtNode<V>::find_next(ArtNode<V>* n, unsigned char c) {
+	if (!n) return NULL;
+
+	switch (n->type) {
+	case NODE4:
+		return static_cast<ArtNode4<V>*>(n)->find_next(c);
+	case NODE16:
+		return static_cast<ArtNode16<V>*>(n)->find_next(c);
+	case NODE48:
+		return static_cast<ArtNode48<V>*>(n)->find_next(c);
+	case NODE256:
+		return static_cast<ArtNode256<V>*>(n)->find_next(c);
+#ifdef USE_VARNODE
+	case VARNODE:
+		return static_cast<ArtVarNode<V>*>(n)->find_next(c);
+#endif
+	}
+
+	abort();
+}
+
+template <typename V>
+std::pair<Node<V>**, bool> ArtNode<V>::lower_bound(ArtNode<V>* n, unsigned char c) {
+	if (!n) return {nullptr, false};
+
+	switch (n->type) {
+	case NODE4:
+		return static_cast<ArtNode4<V>*>(n)->lower_bound(c);
+	case NODE16:
+		return static_cast<ArtNode16<V>*>(n)->lower_bound(c);
+	case NODE48:
+		return static_cast<ArtNode48<V>*>(n)->lower_bound(c);
+	case NODE256:
+		return static_cast<ArtNode256<V>*>(n)->lower_bound(c);
+#ifdef USE_VARNODE
+	case VARNODE:
+		return static_cast<ArtVarNode<V>*>(n)->lower_bound(c);
+#endif
+	}
+
+	abort();
+}
+
+template <typename V>
 void ArtNode<V>::add_child(ArtNode<V>* n, Node<V>** ref, unsigned char c, Node<V>* child) {
 	if (!n) return;
 
@@ -238,19 +284,22 @@ void ArtNode<V>::add_child(ArtNode<V>* n, Node<V>** ref, unsigned char c, Node<V
 }
 
 template <typename V>
-void Leaf<V>::insert(Node<V>** ref, const unsigned char* key, int key_len, V value, int depth, bool force_clone) {
+Leaf<V>* Leaf<V>::insert(Node<V>** ref, const unsigned char* key, int key_len, V value, int depth, bool force_clone) {
 	bool clone = force_clone || this->refcount > 1;
+  Leaf<V>* l = nullptr;
 	// Need to replace this leaf with a node
 	if (!matches(key, key_len)) {
 		if (clone) {
+      l = Leaf<V>::create(key, key_len, value);
 			// Updating an existing value, but need to create a new leaf to
 			// reflect the change
-			Node<V>::switch_ref(ref, Leaf<V>::create(key, key_len, value));
+			Node<V>::switch_ref(ref, l);
 		} else {
 			// Updating an existing value, and safe to make the change in
 			// place
 			this->value = value;
 			this->checkpointed = false;
+      l = this;
 		}
 	} else {
 		// New value, we must split the leaf into a node4
@@ -259,24 +308,25 @@ void Leaf<V>::insert(Node<V>** ref, const unsigned char* key, int key_len, V val
 		Node<V>::switch_ref_no_decrement(ref, result);
 
 		// Create a new leaf
-		Leaf<V>* l2 = Leaf<V>::create(key, key_len, value);
+		l = Leaf<V>::create(key, key_len, value);
 
 		// Determine longest prefix
-		int longest_prefix = longest_common_prefix(l2, depth);
+		int longest_prefix = longest_common_prefix(l, depth);
 		result->partial_len = longest_prefix;
 		memcpy(result->partial, key + depth, min(MAX_PREFIX_LEN, longest_prefix));
 		// Add the leafs to the new node4
 		result->add_child(ref, this->key[depth + longest_prefix], this);
-		result->add_child(ref, l2->key[depth + longest_prefix], l2);
+		result->add_child(ref, l->key[depth + longest_prefix], l);
 
 		Node<V>::decrement_refcount(ref_old);
 
 		// TODO: avoid the increment to self immediately followed by decrement
 	}
+  return l;
 }
 
 template <typename V>
-void ArtNode<V>::insert(Node<V>** ref, const unsigned char* key, int key_len, V value, int depth, bool force_clone) {
+Leaf<V>* ArtNode<V>::insert(Node<V>** ref, const unsigned char* key, int key_len, V value, int depth, bool force_clone) {
 	bool do_clone = force_clone || this->refcount > 1;
 
 	// Check if given node has a prefix
@@ -323,7 +373,7 @@ void ArtNode<V>::insert(Node<V>** ref, const unsigned char* key, int key_len, V 
 
 		Node<V>::decrement_refcount(ref_old);
 
-		return;
+		return l;
 	}
 
 RECURSE_SEARCH:;
@@ -337,11 +387,12 @@ RECURSE_SEARCH:;
 	// Do the insert, either in a child (if a matching child already exists) or in self
 	Node<V>** child = ArtNode<V>::find_child(this_writable, key[depth]);
 	if (child) {
-		Node<V>::insert(*child, child, key, key_len, value, depth + 1, do_clone);
+		return Node<V>::insert(*child, child, key, key_len, value, depth + 1, do_clone);
 	} else {
 		// No child, node goes within us
 		auto l = Leaf<V>::create(key, key_len, value);
 		ArtNode<V>::add_child(this_writable, ref, key[depth], l);
+    return l;
 		// If `this` was full and `do_clone` is true, we will clone a full node
 		// and then immediately delete the clone in favor of a larger node.
 		// TODO: avoid this

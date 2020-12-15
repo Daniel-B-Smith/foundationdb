@@ -53,31 +53,34 @@ void treeBenchmark(T& tree, F generateKey) {
 
 	std::vector<std::pair<key, int>> keys;
 	for (int i = 0; i < keyCount; i++) {
-		keys.push_back({generateKey(), i / 10000});
+		keys.push_back({generateKey(), i / 50});
 	}
 
 	timedRun("insert", keys, [&tree](std::pair<key, int> const& kv) { tree.insert(kv.first, kv.second); });
 	timedRun("find", keys, [&tree](std::pair<key, int> const& k) { ASSERT(tree.find(k.first) != tree.not_found()); });
-  /*timedRun("lower_bound", keys, [&tree](key const & k) { ASSERT(tree.lower_bound(k) != tree.not_found()); });
-	timedRun("upper_bound", keys, [&tree](key const & k) { tree.upper_bound(k); });
+  timedRun("lower_bound", keys, [&tree](std::pair<key, int> const & k) { ASSERT(tree.lower_bound(k.first) != tree.not_found()); });
+	timedRun("upper_bound", keys, [&tree](std::pair<key, int> const & k) { tree.upper_bound(k.first); });
 
 
 	std::sort(keys.begin(), keys.end());
 	keys.resize(std::unique(keys.begin(), keys.end()) - keys.begin());
 
-	auto iter = tree.lower_bound(*keys.begin());
-	timedRun("scan", keys, [&iter](key const& k) {
-		ASSERT(k == *iter);
+	auto iter = tree.lower_bound(keys.begin()->first);
+  ASSERT(iter != tree.end());
+  ASSERT(keys.begin()->first == *iter);
+	timedRun("scan", keys, [&](std::pair<key, int> const& k) {
+    ASSERT(iter != tree.end());
+		ASSERT(k.first == *iter);
 		++iter;
 	});
 	ASSERT(iter == tree.end());
 
-	timedRun("find (sorted)", keys, [&tree](key const& k) { ASSERT(tree.find(k) != tree.end()); });
+	timedRun("find (sorted)", keys, [&tree](std::pair<key, int> const& k) { ASSERT(tree.find(k.first) != tree.end()); });
 
 	std::shuffle(keys.begin(), keys.end(), urng);
 
-	timedRun("erase", keys, [&tree](key const& k) { tree.erase(k); });
-	//ASSERT(tree.begin() == tree.end());*/
+	//timedRun("erase", keys, [&tree](key const& k) { tree.erase(k); });
+	//ASSERT(tree.begin() == tree.end());
 }
 
 static inline StringRef randomStr(Arena& arena) {
