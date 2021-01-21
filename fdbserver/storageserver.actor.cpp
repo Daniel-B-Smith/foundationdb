@@ -176,9 +176,11 @@ struct StorageServerDisk {
 	StorageBytes getStorageBytes() { return storage->getStorageBytes(); }
 	std::tuple<size_t, size_t, size_t> getSize() { return storage->getSize(); }
 
+	// TODO: Add the proper forwarding interface for the versioned API.
+	IKeyValueStore* storage;
+
 private:
 	struct StorageServer* data;
-	IKeyValueStore* storage;
 
 	void writeMutations(const VectorRef<MutationRef>& mutations, Version debugVersion, const char* debugContext);
 
@@ -1006,21 +1008,31 @@ ACTOR Future<Void> getValueQ( StorageServer* data, GetValueRequest req ) {
 			throw wrong_shard_server();
 		}
 
-		state int path = 0;
-		auto i = data->data().at(version).lastLessOrEqual(req.key);
-		if (i && i->isValue() && i.key() == req.key) {
-			v = (Value)i->getValue();
-			path = 1;
-		} else if (!i || !i->isClearTo() || i->getEndKey() <= req.key) {
-			path = 2;
-			Optional<Value> vv = wait( data->storage.readValue( req.key, req.debugID ) );
-			// Validate that while we were reading the data we didn't lose the version or shard
-			if (version < data->storageVersion()) {
-				TEST(true); // transaction_too_old after readValue
-				throw transaction_too_old();
+		// Magic path for the versions we're committing.
+		if (version % 100 == 0) {
+			// We're only serving the magic transactions off of disk.
+			if (data->durableVersion.get() < version) {
+				throw future_version();
 			}
-			data->checkChangeCounter(changeCounter, req.key);
+			Optional<Value> vv = wait(data->storage.storage->readValueAt(req.key, version, req.debugID));
 			v = vv;
+		} else {
+			state int path = 0;
+			auto i = data->data().at(version).lastLessOrEqual(req.key);
+			if (i && i->isValue() && i.key() == req.key) {
+				v = (Value)i->getValue();
+				path = 1;
+			} else if (!i || !i->isClearTo() || i->getEndKey() <= req.key) {
+				path = 2;
+				Optional<Value> vv = wait(data->storage.readValue(req.key, req.debugID));
+				// Validate that while we were reading the data we didn't lose the version or shard
+				if (version < data->storageVersion()) {
+					TEST(true); // transaction_too_old after readValue
+					throw transaction_too_old();
+				}
+				data->checkChangeCounter(changeCounter, req.key);
+				v = vv;
+			}
 		}
 
 		debugMutation("ShardGetValue", version, MutationRef(MutationRef::DebugKey, req.key, v.present()?v.get():LiteralStringRef("<null>")));
@@ -1296,8 +1308,16 @@ ACTOR Future<GetKeyValuesReply> readRange( StorageServer* data, Version version,
 	auto cached = data->cachedRangeMap.intersectingRanges(range);
 	result.cached = (cached.begin() != cached.end());
 
-	// if (limit >= 0) we are reading forward, else backward
-	if (limit >= 0) {
+	if (version % 100 == 0) {
+		// We're only serving the magic transactions off of disk.
+		if (data->durableVersion.get() < version) {
+			throw future_version();
+		}
+		Standalone<RangeResultRef> read = wait(data->storage.storage->readRangeAt(range, version, limit, *pLimitBytes));
+		merge(result.arena, result.data, {}, read, vCount, limit, read.more, pos, *pLimitBytes);
+
+		// if (limit >= 0) we are reading forward, else backward
+	} else if (limit >= 0) {
 		// We might care about a clear beginning before start that
 		//  runs into range
 		vCurrent = view.lastLessOrEqual(range.begin);
@@ -3318,6 +3338,8 @@ void StorageServerDisk::writeMutations(const VectorRef<MutationRef>& mutations, 
 }
 
 bool StorageServerDisk::makeVersionMutationsDurable( Version& prevStorageVersion, Version newStorageVersion, int64_t& bytesLeft ) {
+	// Commit every 100 versions.
+	if (prevStorageVersion % 100 == 0) return true;
 	if (bytesLeft <= 0) return true;
 
 	// Apply mutations from the mutationLog
