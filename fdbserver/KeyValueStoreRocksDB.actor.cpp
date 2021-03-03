@@ -4,6 +4,8 @@
 #include <rocksdb/db.h>
 #include <rocksdb/filter_policy.h>
 #include <rocksdb/options.h>
+#include <rocksdb/perf_context.h>
+#include <rocksdb/perf_level.h>
 #include <rocksdb/slice_transform.h>
 #include <rocksdb/table.h>
 #include <rocksdb/utilities/table_properties_collectors.h>
@@ -222,7 +224,10 @@ struct RocksDBKeyValueStore : IKeyValueStore {
 
 		explicit Reader(DB& db) : db(db) {}
 
-		void init() override {}
+		void init() override {
+			rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTime);
+			rocksdb::get_perf_context()->EnablePerLevelPerfContext();
+		}
 
 		struct ReadValueAction : TypedAction<Reader, ReadValueAction> {
 			Key key;
@@ -300,6 +305,10 @@ struct RocksDBKeyValueStore : IKeyValueStore {
 			if (a.rowLimit == 0 || a.byteLimit == 0) {
 				a.result.send(result);
 			}
+
+			double start = timer_monotonic();
+			rocksdb::get_perf_context()->Reset();
+
 			int accumulatedBytes = 0;
 			rocksdb::Status s;
 			auto options = getReadOptions();
@@ -352,6 +361,13 @@ struct RocksDBKeyValueStore : IKeyValueStore {
 				result.readThrough = result[result.size() - 1].key;
 			}
 			a.result.send(result);
+
+			if ((timer_monotonic() - start) > 1) {
+				TraceEvent(SevError, "RocksDBSlowQuery")
+				    .detail("Start", a.keys.begin.printable())
+				    .detail("End", a.keys.end.printable());
+				std::cout << rocksdb::get_perf_context()->ToString();
+			}
 		}
 	};
 
