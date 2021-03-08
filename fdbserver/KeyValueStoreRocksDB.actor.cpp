@@ -1,5 +1,7 @@
 #ifdef SSD_ROCKSDB_EXPERIMENTAL
 
+#include <string_view>
+
 #include <rocksdb/cache.h>
 #include <rocksdb/db.h>
 #include <rocksdb/filter_policy.h>
@@ -362,11 +364,28 @@ struct RocksDBKeyValueStore : IKeyValueStore {
 			}
 			a.result.send(result);
 
-			if ((timer_monotonic() - start) > 1) {
+			auto duration = timer_monotonic() - start;
+			if (duration > 1) {
 				TraceEvent(SevError, "RocksDBSlowQuery")
 				    .detail("Start", a.keys.begin.printable())
-				    .detail("End", a.keys.end.printable());
-				std::cout << rocksdb::get_perf_context()->ToString();
+				    .detail("End", a.keys.end.printable())
+				    .detail("Duration", duration);
+				auto perf_data = rocksdb::get_perf_context()->ToString(true);
+				std::string_view perf_view(perf_data);
+				const int line_limit = 3500;
+				while (perf_view.size() > line_limit) {
+					std::size_t truncate = 0;
+					while (truncate < line_limit) {
+						std::size_t new_trunc = perf_view.find(' ', truncate);
+						if (new_trunc > line_limit || new_trunc == std::string_view::npos) {
+							std::cout << perf_view.substr(0, truncate);
+							perf_view.remove_prefix(truncate);
+						} else {
+							truncate = new_trunc;
+						}
+					}
+				}
+				std::cout << perf_view;
 			}
 		}
 	};
