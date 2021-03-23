@@ -4,10 +4,13 @@
 #include <rocksdb/db.h>
 #include <rocksdb/filter_policy.h>
 #include <rocksdb/options.h>
+#include <rocksdb/perf_context.h>
+#include <rocksdb/perf_level.h>
 #include <rocksdb/slice_transform.h>
 #include <rocksdb/table.h>
 #include <rocksdb/utilities/table_properties_collectors.h>
 #include "flow/flow.h"
+#include "flow/Histogram.h"
 #include "flow/IThreadPool.h"
 
 #endif // SSD_ROCKSDB_EXPERIMENTAL
@@ -95,8 +98,12 @@ struct RocksDBKeyValueStore : IKeyValueStore {
 	struct Writer : IThreadPoolReceiver {
 		DB& db;
 		UID id;
+		const Reference<Histogram> commitLatency;
 
-		explicit Writer(DB& db, UID id) : db(db), id(id) {}
+		explicit Writer(DB& db, UID id)
+		  : db(db), id(id), commitLatency(Histogram::getHistogram(LiteralStringRef("KeyValueStoreRocksDB"),
+		                                                          LiteralStringRef("CommitLatency"),
+		                                                          Histogram::Unit::microseconds)) {}
 
 		~Writer() override {
 			if (db) {
@@ -104,7 +111,10 @@ struct RocksDBKeyValueStore : IKeyValueStore {
 			}
 		}
 
-		void init() override {}
+		void init() override {
+			rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTime);
+			rocksdb::get_perf_context()->EnablePerLevelPerfContext();
+		}
 
 		Error statusToError(const rocksdb::Status& s) {
 			if (s == rocksdb::Status::IOError()) {
@@ -165,6 +175,9 @@ struct RocksDBKeyValueStore : IKeyValueStore {
 			double getTimeEstimate() override { return SERVER_KNOBS->COMMIT_TIME_ESTIMATE; }
 		};
 		void action(CommitAction& a) {
+			double start = now();
+			rocksdb::get_perf_context()->Reset();
+
 			Standalone<VectorRef<KeyRangeRef>> deletes;
 			DeleteVisitor dv(deletes, deletes.arena());
 			ASSERT(a.batchToCommit->Iterate(&dv).ok());
@@ -183,6 +196,13 @@ struct RocksDBKeyValueStore : IKeyValueStore {
 					auto end = toSlice(keyRange.end);
 					ASSERT(db->SuggestCompactRange(db->DefaultColumnFamily(), &begin, &end).ok());
 				}
+			}
+
+			double latency = now() - start;
+			commitLatency->sampleSeconds(latency);
+			if (latency > 1.) {
+				auto perf_data = rocksdb::get_perf_context()->ToString(true);
+				TraceEvent(SevError, "RocksDBSlowCommit").detail("Stats", perf_data);
 			}
 		}
 
