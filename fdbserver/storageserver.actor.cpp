@@ -544,6 +544,8 @@ public:
 	int64_t versionLag; // An estimate for how many versions it takes for the data to move from the logs to this storage
 	                    // server
 
+	Optional<UID> sourceTLogID; // the tLog from which the latest batch of versions were fetched
+
 	ProtocolVersion logProtocol;
 
 	Reference<ILogSystem> logSystem;
@@ -679,6 +681,8 @@ public:
 		Counter loops;
 		Counter fetchWaitingMS, fetchWaitingCount, fetchExecutingMS, fetchExecutingCount;
 		Counter readsRejected;
+		Counter fetchedVersions;
+		Counter fetchesFromLogs;
 
 		LatencySample readLatencySample;
 		LatencyBands readLatencyBands;
@@ -686,21 +690,21 @@ public:
 		Counters(StorageServer* self)
 		  : cc("StorageServer", self->thisServerID.toString()), getKeyQueries("GetKeyQueries", cc),
 		    getValueQueries("GetValueQueries", cc), getRangeQueries("GetRangeQueries", cc),
-		    getRangeStreamQueries("GetRangeStreamQueries", cc), allQueries("QueryQueue", cc),
-		    finishedQueries("FinishedQueries", cc), lowPriorityQueries("LowPriorityQueries", cc),
-		    rowsQueried("RowsQueried", cc), bytesQueried("BytesQueried", cc), watchQueries("WatchQueries", cc),
-		    emptyQueries("EmptyQueries", cc), bytesInput("BytesInput", cc), bytesDurable("BytesDurable", cc),
-		    bytesFetched("BytesFetched", cc), mutationBytes("MutationBytes", cc),
-		    sampledBytesCleared("SampledBytesCleared", cc), mutations("Mutations", cc),
-		    setMutations("SetMutations", cc), clearRangeMutations("ClearRangeMutations", cc),
-		    atomicMutations("AtomicMutations", cc), updateBatches("UpdateBatches", cc),
-		    updateVersions("UpdateVersions", cc), loops("Loops", cc), fetchWaitingMS("FetchWaitingMS", cc),
-		    fetchWaitingCount("FetchWaitingCount", cc), fetchExecutingMS("FetchExecutingMS", cc),
-		    fetchExecutingCount("FetchExecutingCount", cc), readsRejected("ReadsRejected", cc),
-		    readLatencySample("ReadLatencyMetrics",
-		                      self->thisServerID,
-		                      SERVER_KNOBS->LATENCY_METRICS_LOGGING_INTERVAL,
-		                      SERVER_KNOBS->LATENCY_SAMPLE_SIZE),
+        getRangeStreamQueries("GetRangeStreamQueries", cc), allQueries("QueryQueue", cc), finishedQueries("FinishedQueries", cc),
+		    lowPriorityQueries("LowPriorityQueries", cc), rowsQueried("RowsQueried", cc),
+		    bytesQueried("BytesQueried", cc), watchQueries("WatchQueries", cc), emptyQueries("EmptyQueries", cc),
+		    bytesInput("BytesInput", cc), bytesDurable("BytesDurable", cc), bytesFetched("BytesFetched", cc),
+		    mutationBytes("MutationBytes", cc), sampledBytesCleared("SampledBytesCleared", cc),
+		    mutations("Mutations", cc), setMutations("SetMutations", cc),
+		    clearRangeMutations("ClearRangeMutations", cc), atomicMutations("AtomicMutations", cc),
+		    updateBatches("UpdateBatches", cc), updateVersions("UpdateVersions", cc), loops("Loops", cc),
+		    fetchWaitingMS("FetchWaitingMS", cc), fetchWaitingCount("FetchWaitingCount", cc),
+		    fetchExecutingMS("FetchExecutingMS", cc), fetchExecutingCount("FetchExecutingCount", cc),
+		    readsRejected("ReadsRejected", cc), fetchedVersions("FetchedVersions", cc),
+		    fetchesFromLogs("FetchesFromLogs", cc), readLatencySample("ReadLatencyMetrics",
+                                                                      self->thisServerID,
+                                                                      SERVER_KNOBS->LATENCY_METRICS_LOGGING_INTERVAL,
+                                                                      SERVER_KNOBS->LATENCY_SAMPLE_SIZE),
 		    readLatencyBands("ReadLatencyBands", self->thisServerID, SERVER_KNOBS->STORAGE_LOGGING_DELAY) {
 			specialCounter(cc, "LastTLogVersion", [self]() { return self->lastTLogVersion; });
 			specialCounter(cc, "Version", [self]() { return self->version.get(); });
@@ -3623,9 +3627,22 @@ ACTOR Future<Void> update(StorageServer* data, bool* pReceivedUpdate) {
 			if (data->otherError.getFuture().isReady())
 				data->otherError.getFuture().get();
 
+			data->counters.fetchedVersions += (ver - data->version.get());
+			++data->counters.fetchesFromLogs;
+			Optional<UID> curSourceTLogID = cursor->getCurrentPeekLocation();
+
+			if (curSourceTLogID != data->sourceTLogID) {
+				data->sourceTLogID = curSourceTLogID;
+
+				TraceEvent("StorageServerSourceTLogID", data->thisServerID)
+					.detail("SourceTLogID", data->sourceTLogID.present() ? data->sourceTLogID.get().toString() : "unknown")
+					.trackLatest(data->thisServerID.toString() + "/StorageServerSourceTLogID");
+			}
+
 			data->noRecentUpdates.set(false);
 			data->lastUpdate = now();
 			data->version.set(ver); // Triggers replies to waiting gets for new version(s)
+
 			setDataVersion(data->thisServerID, data->version.get());
 			if (data->otherError.getFuture().isReady())
 				data->otherError.getFuture().get();
