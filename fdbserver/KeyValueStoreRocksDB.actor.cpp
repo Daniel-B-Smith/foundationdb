@@ -161,7 +161,7 @@ ACTOR Future<Void> rocksDBMetricLogger(std::shared_ptr<rocksdb::Statistics> stat
 		{ "EstPendCompactBytes", rocksdb::DB::Properties::kEstimatePendingCompactionBytes },
 	};
 	loop {
-		wait(delay(SERVER_KNOBS->STORAGE_LOGGING_DELAY));
+		wait(delay(SERVER_KNOBS->ROCKSDB_METRICS_DELAY));
 		TraceEvent e("RocksDBMetrics");
 		for (auto& t : tickerStats) {
 			auto& [name, ticker, cum] = t;
