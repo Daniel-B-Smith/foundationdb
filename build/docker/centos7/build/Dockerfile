@@ -132,7 +132,7 @@ RUN source /opt/rh/devtoolset-8/enable && \
     rm -rf /tmp/*
 
 # install rocksdb to /opt
-RUN curl -Ls https://github.com/facebook/rocksdb/archive/v6.10.1.tar.gz -o rocksdb.tar.gz && \
+RUN curl -Ls https://github.com/facebook/rocksdb/archive/v6.20.3.tar.gz -o rocksdb.tar.gz && \
     echo "d573d2f15cdda883714f7e0bc87b814a8d4a53a82edde558f08f940e905541ee  rocksdb.tar.gz" > rocksdb-sha.txt && \
     sha256sum -c rocksdb-sha.txt && \
     tar --directory /opt -xf rocksdb.tar.gz && \

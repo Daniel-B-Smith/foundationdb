@@ -1,4 +1,4 @@
-# FindRocksDB
+# CompileRocksDB
 
 find_package(RocksDB)
 
@@ -33,8 +33,8 @@ if (RocksDB_FOUND)
       ${BINARY_DIR}/librocksdb.a)
 else()
   ExternalProject_Add(rocksdb
-    URL        https://github.com/facebook/rocksdb/archive/v6.10.1.tar.gz
-    URL_HASH   SHA256=d573d2f15cdda883714f7e0bc87b814a8d4a53a82edde558f08f940e905541ee
+    URL        https://github.com/facebook/rocksdb/archive/v6.20.3.tar.gz
+    URL_HASH   SHA256=c6502c7aae641b7e20fafa6c2b92273d935d2b7b2707135ebd9a67b092169dca
     CMAKE_ARGS -DUSE_RTTI=1 -DPORTABLE=${PORTABLE_ROCKSDB}
                -DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}
                -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
